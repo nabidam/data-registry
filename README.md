@@ -32,9 +32,13 @@ build the production backend image with the complete evaluation pipeline, run:
 docker build --build-arg INSTALL_EVALUATION=true -t mtdataregistry-backend:full ./backend
 ```
 
-The full image runs `contamination_safe`; its first eligible import may still download the LaBSE
-model into the container's Hugging Face cache. Both image variants install strictly from the
-committed `backend/uv.lock` file.
+The full image runs `contamination_safe`; its first eligible import may download the LaBSE model
+into the host Hugging Face cache, mounted at `/root/.cache/huggingface` in the backend container.
+Later container runs reuse it. Override the host location with `HOST_HF_CACHE_DIR` when needed.
+Both image variants install strictly from the committed `backend/uv.lock` file.
+
+For either Compose setup, set `INSTALL_EVALUATION=true` in `.env` and rebuild with
+`docker compose up --build` to include the optional evaluation dependencies.
 
 | Service        | URL                    |
 | -------------- | ---------------------- |
