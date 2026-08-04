@@ -185,7 +185,7 @@ frontend/       Vite + React + TypeScript + Tailwind
 # backend
 cd backend
 uv sync
-DATABASE_URL=postgresql+asyncpg://mtreg:mtreg@localhost:5433/mtreg \
+DATABASE_URL=postgresql+psycopg://mtreg:mtreg@localhost:5433/mtreg \
 S3_ENDPOINT_URL=http://localhost:9000 \
 uv run alembic upgrade head
 uv run uvicorn main:app --reload

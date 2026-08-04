@@ -13,8 +13,8 @@ async def get_session() -> AsyncIterator[AsyncSession]:
         yield session
 
 
-async def raw_asyncpg_connection(session: AsyncSession):
-    """Unwrap the driver connection so we can use asyncpg COPY for bulk inserts.
+async def raw_psycopg_connection(session: AsyncSession):
+    """Unwrap the driver connection so we can use psycopg COPY for bulk inserts.
 
     Bulk sample ingestion is the only hot path in this system (100M rows),
     ORM inserts are far too slow there.

@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     debug: bool = True
 
     # Postgres holds metadata only.
-    database_url: str = "postgresql+asyncpg://mtreg:mtreg@postgres:5432/mtreg"
+    database_url: str = "postgresql+psycopg://mtreg:mtreg@postgres:5432/mtreg"
 
     # Object storage: "local" | "s3" (also MinIO) | "gcs"
     storage_backend: str = "s3"

@@ -11,12 +11,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import polars as pl
+from psycopg import sql
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.allocation import Allocation
 from core.config import settings
-from db.session import raw_asyncpg_connection
+from db.session import raw_psycopg_connection
 from models import Batch
 from services.evaluation.reservation import ReservationPolicy, allocate
 from services.ingestion.normalize import ColumnMapping, normalize
@@ -142,7 +143,11 @@ async def ingest_file(
 
 
 async def _copy_samples(session: AsyncSession, df: pl.DataFrame) -> None:
-    conn = await raw_asyncpg_connection(session)
+    conn = await raw_psycopg_connection(session)
+    copy_statement = sql.SQL("COPY {} ({}) FROM STDIN").format(
+        sql.Identifier("samples"),
+        sql.SQL(", ").join(sql.Identifier(column) for column in SAMPLE_COLUMNS),
+    )
     now = datetime.now(UTC)
     meta = df.select(
         "sample_id",
@@ -171,7 +176,10 @@ async def _copy_samples(session: AsyncSession, df: pl.DataFrame) -> None:
             )
             for r in chunk.iter_rows(named=True)
         ]
-        await conn.copy_records_to_table("samples", records=records, columns=SAMPLE_COLUMNS)
+        async with conn.cursor() as cursor:
+            async with cursor.copy(copy_statement) as copy:
+                for record in records:
+                    await copy.write_row(record)
 
 
 def _batch_stats(df: pl.DataFrame) -> dict:
