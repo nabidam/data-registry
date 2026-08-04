@@ -68,6 +68,14 @@ def _stage_upload(file: UploadFile) -> Path:
     return path
 
 
+def _discard_incomplete_line(path: Path) -> None:
+    """Keep a bounded CSV/JSONL preview parseable when the browser sends a head slice."""
+    data = path.read_bytes()
+    last_newline = data.rfind(b"\n")
+    if last_newline > 0:
+        path.write_bytes(data[:last_newline])
+
+
 def _safe_filename(filename: str) -> str:
     name = Path(filename).name
     if not name or name in {".", ".."}:
@@ -243,11 +251,13 @@ async def complete_import(
 
 
 @router.post("/inspect")
-async def inspect(file: UploadFile = File(...)):
+async def inspect(file: UploadFile = File(...), partial: bool = Form(False)):
     """Peek at a file's columns so the UI can offer a column mapping."""
     path = _stage_upload(file)
     try:
         fmt = detect_format(file.filename or "")
+        if partial and fmt in {"csv", "tsv", "jsonl"}:
+            _discard_incomplete_line(path)
         df = read_any(path, fmt).head(5)
         return {"format": fmt, "columns": df.columns, "preview": df.to_dicts()}
     except Exception as exc:

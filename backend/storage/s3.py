@@ -31,13 +31,23 @@ class S3Storage(Storage):
         self.access_key = access_key
         self.secret_key = secret_key
         self.use_ssl = use_ssl
+        endpoint_host = urlparse(endpoint_url).hostname if endpoint_url else None
+        # Docker service names are private network hosts. Some deployment
+        # environments inject HTTP(S)_PROXY globally; routing `minio` through
+        # that proxy makes it unresolvable and turns every S3 call into a 502.
+        # Keep proxy support for public S3/GCS endpoints.
+        bypass_proxy = endpoint_host in {"minio", "localhost", "127.0.0.1", "::1"}
         self.client = boto3.client(
             "s3",
             endpoint_url=endpoint_url,
             region_name=region,
             aws_access_key_id=access_key,
             aws_secret_access_key=secret_key,
-            config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
+            config=Config(
+                signature_version="s3v4",
+                s3={"addressing_style": "path"},
+                proxies={} if bypass_proxy else None,
+            ),
         )
         self._ensure_bucket()
 

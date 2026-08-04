@@ -50,16 +50,17 @@ export default function Imports() {
   const effectiveSelector = form.evaluation_selector || defaults.data?.evaluation_selector
 
   async function inspect(f: File) {
-    // Sending a multi-GB file merely to discover its first few columns was the
-    // first source of gateway failures. Large imports use the editable defaults
-    // below; a small representative file can still be inspected normally.
-    if (f.size > INSPECTION_LIMIT_BYTES) {
-      setInspection(null)
-      return
-    }
     setError(null)
     const body = new FormData()
-    body.append('file', f)
+    const isPartial = f.size > INSPECTION_LIMIT_BYTES
+    // Inspect only a bounded head of a large delimited file. The server drops
+    // its incomplete final line, so the familiar column selector and preview
+    // remain available without re-uploading the entire corpus.
+    const previewFile = isPartial
+      ? new File([f.slice(0, INSPECTION_LIMIT_BYTES)], f.name, { type: f.type })
+      : f
+    body.append('file', previewFile)
+    if (isPartial) body.append('partial', 'true')
     try {
       const result = await api.upload<Inspection>('/imports/inspect', body)
       setInspection(result)
