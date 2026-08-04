@@ -13,6 +13,18 @@ DuckDB queries the Parquet files directly — no Spark, no data lake, no workers
 docker compose up --build
 ```
 
+This local Compose build deliberately omits the optional evaluation group, so the host does not
+need LaBSE, PyTorch, or MinHash installed. Use `heuristic` or `random` reservations locally. To
+build the production backend image with the complete evaluation pipeline, run:
+
+```bash
+docker build --build-arg INSTALL_EVALUATION=true -t mtdataregistry-backend:full ./backend
+```
+
+The full image runs `contamination_safe`; its first eligible import may still download the LaBSE
+model into the container's Hugging Face cache. Both image variants install strictly from the
+committed `backend/uv.lock` file.
+
 | Service        | URL                    |
 | -------------- | ---------------------- |
 | UI             | http://localhost:5173  |
@@ -89,8 +101,11 @@ separator turns `paper-17:004` into document `paper-17`; configure `input.id_sep
 policy for another format. With no mapping, each pair is treated as its own document, so only
 near-duplicate protection can quarantine additional rows.
 
-The default policy enables MinHash and LaBSE (`sentence-transformers/LaBSE`). Backend dependencies
-include `numpy`, `scikit-learn`, `datasketch`, `sentence-transformers`, and CPU-compatible `torch`.
+The default policy enables MinHash and LaBSE (`sentence-transformers/LaBSE`). Its heavy runtime
+dependencies (`numpy`, `scikit-learn`, `datasketch`, `sentence-transformers`, and CPU-compatible
+`torch`) are isolated in the backend `evaluation` dependency group. The ordinary API can run
+without them; install the group with `cd backend && uv sync --group evaluation` before using
+`contamination_safe`, or build the production image with `INSTALL_EVALUATION=true`.
 On the first eligible `contamination_safe` import, sentence-transformers downloads the configured
 model into its Hugging Face cache if it is absent. Later imports reuse that cache. This fetch does
 not download a Docker image. Set `embeddings.enabled: false` only when an explicit TF-IDF fallback

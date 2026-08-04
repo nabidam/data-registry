@@ -46,7 +46,10 @@ services:
       echo bucket ready"
 
   backend:
-    build: ./backend
+    build:
+      context: ./backend
+      args:
+        INSTALL_EVALUATION: "false"
     command: ["/app/entrypoint.sh", "--reload"]
     environment:
       DATABASE_URL: postgresql+asyncpg://mtreg:mtreg@postgres:5432/mtreg

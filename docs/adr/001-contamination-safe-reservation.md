@@ -20,12 +20,16 @@ the dataset.
 
 ## Operational consequences
 
-The backend declares `numpy`, `scikit-learn`, `datasketch`, `sentence-transformers`, and
-CPU-compatible `torch`. The policy enables MinHash and LaBSE by default. During the first eligible
-import, sentence-transformers retrieves `sentence-transformers/LaBSE` into the Hugging Face model
-cache when it is absent; later imports reuse the cache. This is a model download, not a Docker image
-download. Operators can set `embeddings.enabled: false` only when they intend to use the recorded
-TF-IDF fallback.
+The backend isolates `numpy`, `scikit-learn`, `datasketch`, `sentence-transformers`, and
+CPU-compatible `torch` in its `evaluation` dependency group. This keeps an ordinary local API
+installation lightweight; `contamination_safe` fails with an install instruction until the group is
+present. The Docker build defaults to a slim local image; production passes
+`--build-arg INSTALL_EVALUATION=true` to install the group. The policy enables MinHash and LaBSE by
+default. Both variants install only the committed `uv.lock` resolution. During the first eligible
+import, sentence-transformers retrieves
+`sentence-transformers/LaBSE` into the Hugging Face model cache when it is absent; later imports
+reuse the cache. This is a model download, not a Docker image download. Operators can set
+`embeddings.enabled: false` only when they intend to use the recorded TF-IDF fallback.
 
 Document holdout can remove a large fraction of corpora with many chunks per document. Configure
 `selection.max_test_documents` when the expected holdout would make the trainable pool too small.

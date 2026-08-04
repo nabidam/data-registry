@@ -45,7 +45,7 @@ External system. LaBSE is loaded through Hugging Face by sentence-transformers a
 
 ## 5. Stack & dependencies
 
-Use the existing FastAPI, Polars, React, and TypeScript stack plus `numpy`, `datasketch`, `scikit-learn`, `sentence-transformers`, and CPU-compatible `torch`. `backend/config/evaluation_reservation.yaml` is the imported policy source; `EVALUATION_RESERVATION_CONFIG` can point to a deployment-specific copy. The configured LaBSE model is downloaded on first eligible import unless already present in its Hugging Face cache; no Docker image is involved.
+Use the existing FastAPI, Polars, React, and TypeScript stack. Keep `numpy`, `datasketch`, `scikit-learn`, `sentence-transformers`, and CPU-compatible `torch` in the optional backend `evaluation` dependency group, so local API startup does not install or import the selector's model stack. The Docker build defaults to a slim local image; production passes `INSTALL_EVALUATION=true` to install the group. `backend/config/evaluation_reservation.yaml` is the imported policy source; `EVALUATION_RESERVATION_CONFIG` can point to a deployment-specific copy. The configured LaBSE model is downloaded on first eligible import unless already present in its Hugging Face cache; no Docker image is involved.
 
 ## 6. Units
 

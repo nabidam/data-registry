@@ -19,12 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 import polars as pl
-from datasketch import MinHash, MinHashLSH
-from sklearn.decomposition import TruncatedSVD
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.neighbors import NearestNeighbors
 
 from core.config import settings
 
@@ -141,6 +136,21 @@ def _shingles(text: str, size: int = 3) -> set[str]:
     return {" ".join(tokens[index : index + size]) for index in range(len(tokens) - size + 1)}
 
 
+def _require_evaluation_group() -> None:
+    """Fail only when the heavy selector is used, not while the API boots."""
+    try:
+        import datasketch  # noqa: F401
+        import numpy  # noqa: F401
+        import sklearn  # noqa: F401
+        import sentence_transformers  # noqa: F401
+        import torch  # noqa: F401
+    except ImportError as exc:
+        raise RuntimeError(
+            "contamination_safe requires the optional evaluation dependency group; "
+            "run `uv sync --group evaluation` before importing with this selector"
+        ) from exc
+
+
 def _dedup_exact(rows: list[_Row], indexes: list[int]) -> tuple[list[int], set[int]]:
     seen: set[str] = set()
     kept: list[int] = []
@@ -158,6 +168,8 @@ def _dedup_exact(rows: list[_Row], indexes: list[int]) -> tuple[list[int], set[i
 def _dedup_minhash(
     rows: list[_Row], indexes: list[int], threshold: float
 ) -> tuple[list[int], set[int]]:
+    from datasketch import MinHash, MinHashLSH
+
     lsh = MinHashLSH(threshold=threshold, num_perm=128)
     kept: list[int] = []
     dropped: set[int] = set()
@@ -185,12 +197,18 @@ def _cache_paths(texts: list[str], config: dict[str, Any]) -> tuple[Path | None,
 
 
 def _normalize_embeddings(embeddings: np.ndarray) -> np.ndarray:
+    import numpy as np
+
     norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
     norms[norms == 0] = 1.0
     return (embeddings / norms).astype(np.float32)
 
 
 def _tfidf_embeddings(texts: list[str]) -> np.ndarray:
+    import numpy as np
+    from sklearn.decomposition import TruncatedSVD
+    from sklearn.feature_extraction.text import TfidfVectorizer
+
     vectorizer = TfidfVectorizer(analyzer="char_wb", ngram_range=(2, 4), max_features=50_000)
     matrix = vectorizer.fit_transform(texts)
     dimensions = min(256, matrix.shape[1] - 1, len(texts) - 1)
@@ -202,6 +220,8 @@ def _tfidf_embeddings(texts: list[str]) -> np.ndarray:
 
 
 def _compute_embeddings(rows: list[_Row], config: dict[str, Any]) -> np.ndarray:
+    import numpy as np
+
     texts = [row.source for row in rows]
     cache, digest = _cache_paths(texts, config)
     if cache:
@@ -245,6 +265,8 @@ def _compute_embeddings(rows: list[_Row], config: dict[str, Any]) -> np.ndarray:
 def _dedup_embeddings(
     indexes: list[int], embeddings: np.ndarray, threshold: float
 ) -> tuple[list[int], np.ndarray, set[int]]:
+    from sklearn.neighbors import NearestNeighbors
+
     if len(indexes) < 2:
         return indexes, embeddings, set()
     neighbors = NearestNeighbors(n_neighbors=min(6, len(indexes)), metric="cosine").fit(embeddings)
@@ -372,6 +394,8 @@ def _quotas(rows: list[_Row], total: int, config: dict[str, Any]) -> dict[tuple[
 
 
 def _kcenter(indexes: list[int], vectors: dict[int, np.ndarray], count: int, rng: random.Random) -> list[int]:
+    import numpy as np
+
     if count >= len(indexes):
         return indexes
     embeddings = np.vstack([vectors[index] for index in indexes])
@@ -490,6 +514,8 @@ def select(rows: pl.DataFrame, target: int, seed: int, config: dict[str, Any]) -
     ).to_dicts()
     if target <= 0 or not records:
         return SelectionResult([], [], [], [], {}, {"strategy": "contamination_safe", "selected": 0})
+    _require_evaluation_group()
+    import numpy as np
 
     annotated = _annotate(records, config)
     active = list(range(len(annotated)))
