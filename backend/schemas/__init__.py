@@ -5,10 +5,11 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
+from core.allocation import Allocation
 from services.dataset_builder.filters import DatasetFilters
 from services.ingestion.normalize import ColumnMapping
 
-__all__ = ["ColumnMapping", "DatasetFilters"]
+__all__ = ["Allocation", "ColumnMapping", "DatasetFilters"]
 
 
 class ORMModel(BaseModel):
@@ -60,8 +61,17 @@ class SampleOut(ORMModel):
     tgt_lang: str
     domain: str | None
     quality: float | None
-    status: str
+    allocation: str
+    reserved_at: datetime | None
     created_at: datetime
+
+
+class AllocationIn(BaseModel):
+    """Move existing samples between allocations. Reservation is irreversible."""
+
+    sample_ids: list[int]
+    allocation: Allocation
+    reason: str | None = None
 
 
 class AnnotationIn(BaseModel):
@@ -141,6 +151,17 @@ class SnapshotOut(ORMModel):
     manifest: dict | None
     stats: dict | None
     error: str | None
+    created_at: datetime
+
+
+class ContaminationOut(ORMModel):
+    """A past snapshot that already exported samples now reserved for evaluation."""
+
+    id: int
+    snapshot_id: int
+    sample_count: int
+    sample_ids: list | None
+    reason: str | None
     created_at: datetime
 
 

@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.allocation import Allocation
 from db.session import get_session
 from models import (
     Batch,
@@ -11,6 +12,7 @@ from models import (
     Model,
     Sample,
     Snapshot,
+    SnapshotContamination,
     Source,
 )
 
@@ -34,6 +36,14 @@ async def overview(session: AsyncSession = Depends(get_session)):
     async def count(model) -> int:
         return await session.scalar(select(func.count()).select_from(model)) or 0
 
+    async def allocated(allocation: Allocation) -> int:
+        return (
+            await session.scalar(
+                select(func.count()).select_from(Sample).where(Sample.allocation == allocation)
+            )
+            or 0
+        )
+
     return {
         "samples": await count(Sample),
         "batches": await count(Batch),
@@ -43,10 +53,16 @@ async def overview(session: AsyncSession = Depends(get_session)):
         "evaluation_sets": await count(EvaluationSet),
         "experiments": await count(Experiment),
         "models": await count(Model),
-        "ignored_samples": await session.scalar(
-            select(func.count()).select_from(Sample).where(Sample.status == "ignored")
-        ),
+        "trainable_samples": await allocated(Allocation.TRAINABLE),
+        "reserved_samples": await allocated(Allocation.RESERVED_EVALUATION),
+        "ignored_samples": await allocated(Allocation.IGNORED),
+        "contaminated_snapshots": await count(SnapshotContamination),
     }
+
+
+@router.get("/allocations")
+async def allocations(session: AsyncSession = Depends(get_session)):
+    return await _grouped(session, Sample.allocation)
 
 
 @router.get("/language-pairs")

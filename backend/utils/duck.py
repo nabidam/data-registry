@@ -30,7 +30,8 @@ def parquet_source(uris: Sequence[str]) -> str:
             "NULL::INTEGER AS source_id, NULL::VARCHAR AS src_lang, "
             "NULL::VARCHAR AS tgt_lang, NULL::VARCHAR AS domain, "
             "NULL::DOUBLE AS quality, NULL::VARCHAR AS source_text, "
-            "NULL::VARCHAR AS target_text, NULL::VARCHAR AS meta WHERE false)"
+            "NULL::VARCHAR AS target_text, NULL::VARCHAR AS meta, "
+            "NULL::VARCHAR AS allocation WHERE false)"
         )
     quoted = ", ".join("'" + u.replace("'", "''") + "'" for u in uris)
     return f"read_parquet([{quoted}], union_by_name=true)"

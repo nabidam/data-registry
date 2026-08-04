@@ -2,10 +2,12 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.allocation import Allocation
 from core.errors import NotFound
 from db.session import get_session
 from models import Annotation, Sample
 from schemas import AnnotationIn, AnnotationOut
+from services.evaluation.reservation import restore_allocation
 
 router = APIRouter(prefix="/annotations", tags=["annotations"])
 
@@ -28,8 +30,9 @@ async def list_annotations(
 async def create_annotation(payload: AnnotationIn, session: AsyncSession = Depends(get_session)):
     """Annotations are append-only; original samples are never modified.
 
-    The sample's ``status`` column is a denormalized copy of the latest
-    ignore decision so dataset builds can filter without a join.
+    The sample's ``allocation`` reflects the latest ignore decision so dataset
+    builds can filter without a join. Un-ignoring never resurrects a reserved
+    evaluation sample into the trainable pool.
     """
     sample = await session.get(Sample, payload.sample_id)
     if sample is None:
@@ -37,7 +40,7 @@ async def create_annotation(payload: AnnotationIn, session: AsyncSession = Depen
 
     annotation = Annotation(**payload.model_dump())
     session.add(annotation)
-    sample.status = "ignored" if payload.ignored else "active"
+    sample.allocation = Allocation.IGNORED if payload.ignored else restore_allocation(sample)
     if payload.quality is not None:
         sample.quality = payload.quality
     await session.commit()

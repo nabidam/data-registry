@@ -1,4 +1,9 @@
-"""Ingestion: raw file -> immutable batch (Parquet) + sample metadata (Postgres)."""
+"""Ingestion: raw file -> immutable batch (Parquet) + sample metadata (Postgres).
+
+Pipeline: read -> normalize -> canonical samples -> evaluation selection ->
+reserved / trainable. Reservation happens here, before the batch is visible to
+the dataset builder, so evaluation data can never leak into a snapshot.
+"""
 
 import logging
 from datetime import UTC, datetime
@@ -8,9 +13,11 @@ import polars as pl
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.allocation import Allocation
 from core.config import settings
 from db.session import raw_asyncpg_connection
 from models import Batch
+from services.evaluation.reservation import ReservationPolicy, allocate
 from services.ingestion.normalize import ColumnMapping, normalize
 from services.ingestion.readers import detect_format, read_any
 from storage import get_storage
@@ -26,7 +33,8 @@ SAMPLE_COLUMNS = (
     "tgt_lang",
     "domain",
     "quality",
-    "status",
+    "allocation",
+    "reserved_at",
     "created_at",
 )
 
@@ -56,6 +64,7 @@ async def ingest_file(
     mapping: ColumnMapping,
     fmt: str | None = None,
     notes: str | None = None,
+    policy: ReservationPolicy | None = None,
 ) -> Batch:
     storage = get_storage()
     fmt = (fmt or detect_format(filename)).lower()
@@ -99,6 +108,9 @@ async def ingest_file(
         "meta",
     )
 
+    # Evaluation selection runs before anything downstream can see the batch.
+    df, reservation = allocate(df, policy or ReservationPolicy.resolve())
+
     work = Path(settings.work_dir) / f"batch_{batch.id}"
     work.mkdir(parents=True, exist_ok=True)
     local_parquet = work / "data.parquet"
@@ -110,10 +122,15 @@ async def ingest_file(
 
     batch.sample_count = df.height
     batch.status = "ready"
-    batch.stats = _batch_stats(df)
+    batch.stats = {**_batch_stats(df), "reservation": reservation}
     await session.commit()
     await session.refresh(batch)
-    log.info("ingested batch %s (%s samples)", batch.name, batch.sample_count)
+    log.info(
+        "ingested batch %s (%s samples, %s reserved for evaluation)",
+        batch.name,
+        batch.sample_count,
+        reservation["reserved"],
+    )
     return batch
 
 
@@ -121,7 +138,14 @@ async def _copy_samples(session: AsyncSession, df: pl.DataFrame) -> None:
     conn = await raw_asyncpg_connection(session)
     now = datetime.now(UTC)
     meta = df.select(
-        "sample_id", "batch_id", "source_id", "src_lang", "tgt_lang", "domain", "quality"
+        "sample_id",
+        "batch_id",
+        "source_id",
+        "src_lang",
+        "tgt_lang",
+        "domain",
+        "quality",
+        "allocation",
     )
     for chunk in meta.iter_slices(COPY_CHUNK):
         records = [
@@ -133,7 +157,8 @@ async def _copy_samples(session: AsyncSession, df: pl.DataFrame) -> None:
                 r["tgt_lang"],
                 r["domain"],
                 r["quality"],
-                "active",
+                r["allocation"],
+                now if r["allocation"] == Allocation.RESERVED_EVALUATION else None,
                 now,
             )
             for r in chunk.iter_rows(named=True)

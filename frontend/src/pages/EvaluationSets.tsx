@@ -33,7 +33,7 @@ export default function EvaluationSets() {
     <>
       <PageHeader
         title="Evaluation Sets"
-        subtitle="Benchmark collections, independent from train/test splits"
+        subtitle="Built only from samples reserved at import time; independent from train/test splits"
       />
       <ErrorBox error={create.error} />
 

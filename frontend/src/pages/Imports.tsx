@@ -1,11 +1,11 @@
-import { useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 
 import { DataTable } from '@/components/DataTable'
 import { Button, Card, ErrorBox, Field, Input, PageHeader, Select } from '@/components/ui'
 import { useList } from '@/hooks/useResource'
 import { api } from '@/lib/api'
-import type { Batch, Row, Source } from '@/types'
+import type { Batch, ReservationDefaults, Row, Source } from '@/types'
 
 type Inspection = { format: string; columns: string[]; preview: Row[] }
 
@@ -29,6 +29,17 @@ export default function Imports() {
     domain_column: '',
     quality_column: '',
     notes: '',
+    // Evaluation reservation, applied to this import before anything is trainable.
+    evaluation_percent: '',
+    evaluation_max_samples: '',
+    evaluation_selector: '',
+    random_seed: '',
+  })
+
+  // Blank reservation fields fall back to these server-side defaults.
+  const defaults = useQuery({
+    queryKey: ['reservation-defaults'],
+    queryFn: () => api.get<ReservationDefaults>('/imports/reservation-defaults'),
   })
 
   async function inspect(f: File) {
@@ -91,7 +102,7 @@ export default function Imports() {
     <>
       <PageHeader
         title="Imports"
-        subtitle="CSV, TSV, JSON, JSONL, TMX, XLSX, Parquet — each import creates one immutable batch"
+        subtitle="Each import creates one immutable batch; a slice is reserved for evaluation before any of it becomes trainable"
       />
       <ErrorBox error={error} />
 
@@ -152,6 +163,44 @@ export default function Imports() {
           {columnSelect('target_column', 'Target text column')}
           {columnSelect('domain_column', 'Domain column', true)}
           {columnSelect('quality_column', 'Quality column', true)}
+          <Field label={`Evaluation % (default ${defaults.data?.evaluation_percent ?? '—'})`}>
+            <Input
+              type="number"
+              step="0.1"
+              placeholder={String(defaults.data?.evaluation_percent ?? '')}
+              value={form.evaluation_percent}
+              onChange={(e) => setForm({ ...form, evaluation_percent: e.target.value })}
+            />
+          </Field>
+          <Field label={`Max reserved (default ${defaults.data?.evaluation_max_samples ?? '—'})`}>
+            <Input
+              type="number"
+              placeholder={String(defaults.data?.evaluation_max_samples ?? '')}
+              value={form.evaluation_max_samples}
+              onChange={(e) => setForm({ ...form, evaluation_max_samples: e.target.value })}
+            />
+          </Field>
+          <Field label="Selector">
+            <Select
+              value={form.evaluation_selector}
+              onChange={(e) => setForm({ ...form, evaluation_selector: e.target.value })}
+            >
+              <option value="">{defaults.data?.evaluation_selector ?? 'default'}</option>
+              {defaults.data?.selectors.map((name) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <Field label={`Seed (default ${defaults.data?.random_seed ?? '—'})`}>
+            <Input
+              type="number"
+              placeholder={String(defaults.data?.random_seed ?? '')}
+              value={form.random_seed}
+              onChange={(e) => setForm({ ...form, random_seed: e.target.value })}
+            />
+          </Field>
           <Field label="Notes">
             <Input
               value={form.notes}
@@ -185,6 +234,14 @@ export default function Imports() {
           { key: 'name', header: 'Name' },
           { key: 'format', header: 'Format' },
           { key: 'sample_count', header: 'Samples' },
+          {
+            key: 'reserved',
+            header: 'Reserved',
+            render: (r) =>
+              String(
+                (r.stats as { reservation?: { reserved?: number } })?.reservation?.reserved ?? '—',
+              ),
+          },
           { key: 'status', header: 'Status' },
         ]}
       />

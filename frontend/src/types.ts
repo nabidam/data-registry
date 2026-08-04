@@ -19,6 +19,9 @@ export type Batch = {
   created_at: string
 }
 
+/** Exactly one allocation per sample; reserved samples never become trainable again. */
+export type Allocation = 'TRAINABLE' | 'RESERVED_EVALUATION' | 'IGNORED'
+
 export type Sample = {
   id: number
   batch_id: number
@@ -27,10 +30,28 @@ export type Sample = {
   tgt_lang: string
   domain: string | null
   quality: number | null
-  status: string
+  allocation: Allocation
+  reserved_at: string | null
   created_at: string
   source_text?: string
   target_text?: string
+}
+
+export type Contamination = {
+  id: number
+  snapshot_id: number
+  sample_count: number
+  sample_ids: number[] | null
+  reason: string | null
+  created_at: string
+}
+
+export type ReservationDefaults = {
+  evaluation_percent: number
+  evaluation_max_samples: number
+  evaluation_selector: string
+  random_seed: number
+  selectors: string[]
 }
 
 export type Row = Record<string, unknown>
@@ -44,7 +65,6 @@ export type Filters = {
   min_quality?: number | null
   max_quality?: number | null
   text_contains?: string | null
-  include_ignored?: boolean
 }
 
 export type Dataset = {
@@ -132,5 +152,8 @@ export type Overview = {
   evaluation_sets: number
   experiments: number
   models: number
+  trainable_samples: number
+  reserved_samples: number
   ignored_samples: number
+  contaminated_snapshots: number
 }

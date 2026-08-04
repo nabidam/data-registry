@@ -24,7 +24,11 @@ async def list_sets(
 
 @router.post("", response_model=EvaluationSetOut, status_code=201)
 async def create_set(payload: EvaluationSetIn, session: AsyncSession = Depends(get_session)):
-    """Build an evaluation set from explicit sample ids or from filters + a sample limit."""
+    """Build an evaluation set from explicit sample ids or from filters + a limit.
+
+    Only RESERVED_EVALUATION samples are eligible; anything else is ignored, so a
+    set can never pull a trainable sample into a benchmark.
+    """
     eval_set = EvaluationSet(
         name=payload.name,
         description=payload.description,

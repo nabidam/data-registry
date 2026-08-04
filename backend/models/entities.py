@@ -24,6 +24,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from core.allocation import Allocation
 from db.base import Base, TimestampMixin
 
 sample_id_seq = Sequence("samples_id_seq")
@@ -73,14 +74,18 @@ class Sample(Base):
     tgt_lang: Mapped[str] = mapped_column(String(16), nullable=False)
     domain: Mapped[str | None] = mapped_column(String(64))
     quality: Mapped[float | None] = mapped_column(Float)
-    status: Mapped[str] = mapped_column(String(16), default="active")  # active | ignored
+    # TRAINABLE | RESERVED_EVALUATION | IGNORED — see core/allocation.py.
+    allocation: Mapped[str] = mapped_column(String(24), default=Allocation.TRAINABLE)
+    # Set the first time a sample is reserved and never cleared: reservation is
+    # permanent, so a sample can never drift back into the trainable pool.
+    reserved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     __table_args__ = (
         Index("ix_samples_batch", "batch_id"),
         Index("ix_samples_langpair", "src_lang", "tgt_lang"),
         Index("ix_samples_domain", "domain"),
-        Index("ix_samples_status", "status"),
+        Index("ix_samples_allocation", "allocation"),
     )
 
 
@@ -143,6 +148,24 @@ class Snapshot(Base, TimestampMixin):
     manifest: Mapped[dict | None] = mapped_column(JSONB)
     stats: Mapped[dict | None] = mapped_column(JSONB)
     error: Mapped[str | None] = mapped_column(Text)
+
+
+class SnapshotContamination(Base, TimestampMixin):
+    """Overlap between an existing snapshot and samples reserved after the fact.
+
+    Snapshots are never rewritten; this table is the record that a past export
+    contains data now held back for evaluation.
+    """
+
+    __tablename__ = "snapshot_contaminations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    snapshot_id: Mapped[int] = mapped_column(ForeignKey("snapshots.id"), nullable=False)
+    sample_count: Mapped[int] = mapped_column(BigInteger, default=0)
+    sample_ids: Mapped[list | None] = mapped_column(JSONB)
+    reason: Mapped[str | None] = mapped_column(String(200))
+
+    __table_args__ = (Index("ix_contaminations_snapshot", "snapshot_id"),)
 
 
 class EvaluationSet(Base, TimestampMixin):

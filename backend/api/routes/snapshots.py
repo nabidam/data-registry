@@ -4,8 +4,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.errors import BadRequest, NotFound
 from db.session import SessionLocal, get_session
-from models import DatasetDefinition, Snapshot, SplitDefinition
-from schemas import SnapshotIn, SnapshotOut
+from models import DatasetDefinition, Snapshot, SnapshotContamination, SplitDefinition
+from schemas import ContaminationOut, SnapshotIn, SnapshotOut
 from services.snapshots.service import build_snapshot
 
 router = APIRouter(prefix="/snapshots", tags=["snapshots"])
@@ -72,6 +72,20 @@ async def get_manifest(snapshot_id: int, session: AsyncSession = Depends(get_ses
     if not snapshot.manifest:
         raise BadRequest(f"snapshot {snapshot_id} is {snapshot.status}, no manifest yet")
     return snapshot.manifest
+
+
+@router.get("/{snapshot_id}/contamination", response_model=list[ContaminationOut])
+async def get_contamination(snapshot_id: int, session: AsyncSession = Depends(get_session)):
+    """Samples reserved for evaluation *after* this snapshot already exported them.
+
+    History is never rewritten: the snapshot stays exactly as it was built.
+    """
+    rows = await session.execute(
+        select(SnapshotContamination)
+        .where(SnapshotContamination.snapshot_id == snapshot_id)
+        .order_by(SnapshotContamination.id.desc())
+    )
+    return rows.scalars().all()
 
 
 @router.delete("/{snapshot_id}", status_code=204)

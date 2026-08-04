@@ -9,6 +9,8 @@ from core.config import settings
 from core.errors import BadRequest
 from db.session import get_session
 from schemas import BatchOut, ColumnMapping
+from services.evaluation.reservation import ReservationPolicy
+from services.evaluation.selectors import SELECTORS
 from services.ingestion.readers import SUPPORTED_FORMATS, detect_format, read_any
 from services.ingestion.service import ingest_file
 
@@ -27,6 +29,12 @@ def _stage_upload(file: UploadFile) -> Path:
 @router.get("/formats")
 async def formats():
     return {"formats": SUPPORTED_FORMATS}
+
+
+@router.get("/reservation-defaults")
+async def reservation_defaults():
+    """Reservation settings the UI pre-fills, plus the selectors it may choose."""
+    return {**ReservationPolicy.resolve().as_dict(), "selectors": sorted(SELECTORS)}
 
 
 @router.post("/inspect")
@@ -59,9 +67,18 @@ async def create_import(
     quality_column: str | None = Form(None),
     format: str | None = Form(None),
     notes: str | None = Form(None),
+    evaluation_percent: float | None = Form(None),
+    evaluation_max_samples: int | None = Form(None),
+    evaluation_selector: str | None = Form(None),
+    random_seed: int | None = Form(None),
     session: AsyncSession = Depends(get_session),
 ):
-    """Import a raw file as one immutable ingestion batch."""
+    """Import a raw file as one immutable ingestion batch.
+
+    Part of the same transaction: the evaluation-selection pipeline reserves a
+    slice of the batch before any of it becomes trainable. The reservation
+    settings default to the application config and can be overridden per import.
+    """
     path = _stage_upload(file)
     mapping = ColumnMapping(
         source_text=source_column,
@@ -84,6 +101,12 @@ async def create_import(
             mapping=mapping,
             fmt=format,
             notes=notes,
+            policy=ReservationPolicy.resolve(
+                percent=evaluation_percent,
+                max_samples=evaluation_max_samples,
+                selector=evaluation_selector,
+                seed=random_seed,
+            ),
         )
     except Exception as exc:
         await session.rollback()

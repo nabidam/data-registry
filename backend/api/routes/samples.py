@@ -2,10 +2,12 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.allocation import Allocation
 from core.errors import NotFound
 from db.session import get_session
 from models import Batch, Sample
-from schemas import SampleOut
+from schemas import AllocationIn, SampleOut
+from services.evaluation.reservation import set_allocation
 from utils.duck import connect, parquet_source
 
 router = APIRouter(prefix="/samples", tags=["samples"])
@@ -18,7 +20,7 @@ async def list_samples(
     tgt_lang: str | None = None,
     domain: str | None = None,
     source_id: int | None = None,
-    status: str | None = None,
+    allocation: Allocation | None = None,
     min_quality: float | None = None,
     limit: int = Query(50, le=500),
     offset: int = 0,
@@ -37,8 +39,8 @@ async def list_samples(
         conditions.append(Sample.domain == domain)
     if source_id:
         conditions.append(Sample.source_id == source_id)
-    if status:
-        conditions.append(Sample.status == status)
+    if allocation:
+        conditions.append(Sample.allocation == allocation)
     if min_quality is not None:
         conditions.append(Sample.quality >= min_quality)
     if conditions:
@@ -52,6 +54,21 @@ async def list_samples(
     rows = await session.execute(stmt.order_by(Sample.id).limit(limit).offset(offset))
     items = [SampleOut.model_validate(s) for s in rows.scalars().all()]
     return {"total": total, "items": items}
+
+
+@router.post("/allocation")
+async def change_allocation(payload: AllocationIn, session: AsyncSession = Depends(get_session)):
+    """Move samples between allocations.
+
+    Reserving samples that earlier snapshots already exported does not rewrite
+    those snapshots; the overlap is recorded as historical contamination instead.
+    """
+    return await set_allocation(
+        session,
+        payload.sample_ids,
+        payload.allocation,
+        reason=payload.reason or "manual allocation change",
+    )
 
 
 @router.get("/{sample_id}")

@@ -39,4 +39,8 @@ async def app_settings():
         "s3_endpoint_url": settings.s3_endpoint_url,
         "mlflow_tracking_uri": settings.mlflow_tracking_uri,
         "work_dir": settings.work_dir,
+        "evaluation_percent": settings.evaluation_percent,
+        "evaluation_max_samples": settings.evaluation_max_samples,
+        "evaluation_selector": settings.evaluation_selector,
+        "random_seed": settings.random_seed,
     }

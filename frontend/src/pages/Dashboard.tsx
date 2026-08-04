@@ -32,7 +32,10 @@ export default function Dashboard() {
         <Stat label="Sources" value={o?.sources ?? '—'} />
         <Stat label="Evaluation sets" value={o?.evaluation_sets ?? '—'} />
         <Stat label="Experiments" value={o?.experiments ?? '—'} />
+        <Stat label="Trainable" value={o?.trainable_samples ?? '—'} />
+        <Stat label="Reserved (eval)" value={o?.reserved_samples ?? '—'} />
         <Stat label="Ignored" value={o?.ignored_samples ?? '—'} />
+        <Stat label="Contaminated snapshots" value={o?.contaminated_snapshots ?? '—'} />
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">

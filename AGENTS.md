@@ -248,7 +248,7 @@ Fields should include things like:
 * batch
 * source
 * quality
-* status
+* allocation (TRAINABLE | RESERVED_EVALUATION | IGNORED)
 * timestamps
 
 Actual text should live in Parquet.
@@ -328,7 +328,7 @@ Supports multiple versions.
 
 ## Evaluation Set
 
-Independent benchmark collections.
+Independent benchmark collections, built only from RESERVED_EVALUATION samples.
 
 Examples:
 
@@ -444,6 +444,9 @@ Normalize everything into one canonical schema.
 
 ## Step 2
 
+Run the evaluation selection pipeline: reserve a slice of the batch for future
+evaluation, mark the rest trainable.
+
 Create an immutable ingestion batch.
 
 Store normalized data as Parquet.
@@ -497,6 +500,9 @@ Track experiments.
 
 # Dataset Builder
 
+Only uses samples allocated TRAINABLE; reserved and ignored samples are excluded
+without configuration.
+
 Must support filtering by:
 
 * language pair
@@ -505,7 +511,6 @@ Must support filtering by:
 * tags
 * quality
 * batch
-* ignored status
 
 Should also support combining multiple batches.
 

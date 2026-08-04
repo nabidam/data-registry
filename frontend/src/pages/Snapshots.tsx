@@ -5,7 +5,7 @@ import { DataTable } from '@/components/DataTable'
 import { Badge, Button, Card, ErrorBox, Field, Input, PageHeader, Select } from '@/components/ui'
 import { useCreate, useList, useRemove } from '@/hooks/useResource'
 import { api } from '@/lib/api'
-import type { Dataset, Row, Snapshot, Split } from '@/types'
+import type { Contamination, Dataset, Row, Snapshot, Split } from '@/types'
 
 export default function Snapshots() {
   // Builds run in the background; poll while any snapshot is still building.
@@ -21,10 +21,15 @@ export default function Snapshots() {
   const remove = useRemove('snapshots')
   const [form, setForm] = useState({ name: '', dataset_id: '', split_id: '', seed: '42' })
   const [manifest, setManifest] = useState<Record<string, unknown> | null>(null)
+  // Samples reserved after this snapshot was built; history is never rewritten.
+  const [contamination, setContamination] = useState<Contamination[] | null>(null)
 
   return (
     <>
-      <PageHeader title="Snapshots" subtitle="Immutable exports: train / validation / test + manifest" />
+      <PageHeader
+        title="Snapshots"
+        subtitle="Immutable exports of trainable samples: train / validation / test + manifest"
+      />
       <ErrorBox error={create.error} />
 
       <Card className="mb-4">
@@ -120,6 +125,16 @@ export default function Snapshots() {
                 >
                   Manifest
                 </Button>
+                <Button
+                  variant="ghost"
+                  onClick={async () =>
+                    setContamination(
+                      await api.get<Contamination[]>(`/snapshots/${r.id}/contamination`),
+                    )
+                  }
+                >
+                  Contamination
+                </Button>
                 <Button variant="danger" onClick={() => remove.mutate(r.id as number)}>
                   Delete
                 </Button>
@@ -128,6 +143,31 @@ export default function Snapshots() {
           },
         ]}
       />
+
+      {contamination && (
+        <Card className="mt-4">
+          <div className="mb-2 flex items-center justify-between">
+            <h2 className="font-medium">Historically contaminated samples</h2>
+            <Button variant="ghost" onClick={() => setContamination(null)}>
+              Close
+            </Button>
+          </div>
+          {contamination.length === 0 ? (
+            <p className="text-sm text-slate-500">
+              None: no sample in this snapshot was reserved for evaluation afterwards.
+            </p>
+          ) : (
+            <DataTable
+              rows={contamination as unknown as Row[]}
+              columns={[
+                { key: 'sample_count', header: 'Samples' },
+                { key: 'reason', header: 'Reason' },
+                { key: 'created_at', header: 'Detected' },
+              ]}
+            />
+          )}
+        </Card>
+      )}
 
       {manifest && (
         <Card className="mt-4">

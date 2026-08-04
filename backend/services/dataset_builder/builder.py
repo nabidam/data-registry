@@ -2,6 +2,11 @@
 
 Nothing is copied or materialized here. A dataset definition is a query over
 the immutable batch Parquet files; only snapshots write files.
+
+Every context is scoped to exactly one allocation and defaults to TRAINABLE, so
+reserved evaluation and ignored samples are excluded with no configuration —
+that is what makes builds deterministic. Postgres is the authority on
+allocation; the copy inside the batch Parquet is only the value at ingest time.
 """
 
 import duckdb
@@ -9,6 +14,7 @@ import polars as pl
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.allocation import Allocation
 from models import Batch, DatasetDefinition, Sample
 from services.dataset_builder.filters import DatasetFilters
 from utils.duck import connect, parquet_source
@@ -21,9 +27,12 @@ async def batch_uris(session: AsyncSession, batch_ids: list[int] | None) -> list
     return [r[0] for r in await session.execute(stmt)]
 
 
-async def ignored_sample_ids(session: AsyncSession, batch_ids: list[int] | None) -> pl.DataFrame:
-    """Ignored samples are excluded at build time; the underlying data is untouched."""
-    stmt = select(Sample.id).where(Sample.status == "ignored")
+async def _sample_ids(
+    session: AsyncSession, batch_ids: list[int] | None, *, allocation: str, equal: bool
+) -> pl.DataFrame:
+    """Sample ids whose allocation matches (or does not match) ``allocation``."""
+    column = Sample.allocation
+    stmt = select(Sample.id).where(column == allocation if equal else column != allocation)
     if batch_ids:
         stmt = stmt.where(Sample.batch_id.in_(batch_ids))
     ids = [r[0] for r in await session.execute(stmt)]
@@ -48,30 +57,38 @@ async def make_context(
     session: AsyncSession,
     filters: DatasetFilters,
     batch_ids: list[int] | None = None,
+    allocation: str = Allocation.TRAINABLE,
 ) -> BuildContext:
+    """Build a context restricted to one allocation.
+
+    TRAINABLE is expressed as an anti join against everything else (the small
+    side is the reserved + ignored pool); any other allocation is a semi join
+    against its own, equally small, id list.
+    """
     uris = await batch_uris(session, batch_ids)
     con = connect()
     src = parquet_source(uris)
     where = filters.where_sql()
+    trainable = allocation == Allocation.TRAINABLE
 
-    if filters.include_ignored:
-        relation = f"(SELECT * FROM {src} WHERE {where})"
-    else:
-        ignored = await ignored_sample_ids(session, batch_ids)  # noqa: F841 - used by DuckDB
-        con.register("ignored_samples", ignored)
-        relation = (
-            f"(SELECT s.* FROM {src} s "
-            "ANTI JOIN ignored_samples i ON i.sample_id = s.sample_id "
-            f"WHERE {where})"
-        )
+    ids = await _sample_ids(session, batch_ids, allocation=allocation, equal=not trainable)
+    con.register("allocation_ids", ids)
+    join = "ANTI JOIN" if trainable else "SEMI JOIN"
+    relation = (
+        f"(SELECT s.* FROM {src} s "
+        f"{join} allocation_ids a ON a.sample_id = s.sample_id "
+        f"WHERE {where})"
+    )
     return BuildContext(con, relation)
 
 
 async def context_for_definition(
-    session: AsyncSession, definition: DatasetDefinition
+    session: AsyncSession,
+    definition: DatasetDefinition,
+    allocation: str = Allocation.TRAINABLE,
 ) -> BuildContext:
     filters = DatasetFilters(**(definition.filters or {}))
-    return await make_context(session, filters, definition.batch_ids or None)
+    return await make_context(session, filters, definition.batch_ids or None, allocation)
 
 
 def count_rows(ctx: BuildContext) -> int:

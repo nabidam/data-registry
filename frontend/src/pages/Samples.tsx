@@ -1,10 +1,10 @@
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 
 import { DataTable } from '@/components/DataTable'
 import { Badge, Button, Card, Field, Input, PageHeader, Select } from '@/components/ui'
 import { api } from '@/lib/api'
-import type { Row, Sample } from '@/types'
+import type { Allocation, Row, Sample } from '@/types'
 
 type Query = {
   q: string
@@ -12,10 +12,10 @@ type Query = {
   src_lang: string
   tgt_lang: string
   domain: string
-  status: string
+  allocation: string
 }
 
-const EMPTY: Query = { q: '', batch_id: '', src_lang: '', tgt_lang: '', domain: '', status: '' }
+const EMPTY: Query = { q: '', batch_id: '', src_lang: '', tgt_lang: '', domain: '', allocation: '' }
 
 export default function Samples() {
   const [query, setQuery] = useState<Query>(EMPTY)
@@ -53,6 +53,15 @@ export default function Samples() {
     enabled: selected !== null,
   })
 
+  const qc = useQueryClient()
+  // Reserving is one-way: a reserved sample can never return to the trainable pool.
+  const reallocate = async (allocation: Allocation) => {
+    if (selected === null) return
+    await api.post('/samples/allocation', { sample_ids: [selected], allocation })
+    await qc.invalidateQueries({ queryKey: ['sample'] })
+    await qc.invalidateQueries({ queryKey: ['samples'] })
+  }
+
   const field = (key: keyof Query, label: string) => (
     <Field label={label}>
       <Input value={query[key]} onChange={(e) => setQuery({ ...query, [key]: e.target.value })} />
@@ -61,7 +70,10 @@ export default function Samples() {
 
   return (
     <>
-      <PageHeader title="Samples" subtitle="Immutable translation units" />
+      <PageHeader
+        title="Samples"
+        subtitle="Immutable translation units. Allocation is decided at import time."
+      />
       <Card className="mb-4">
         <form
           className="grid gap-3 md:grid-cols-7"
@@ -76,14 +88,15 @@ export default function Samples() {
           {field('src_lang', 'Source lang')}
           {field('tgt_lang', 'Target lang')}
           {field('domain', 'Domain')}
-          <Field label="Status">
+          <Field label="Allocation">
             <Select
-              value={query.status}
-              onChange={(e) => setQuery({ ...query, status: e.target.value })}
+              value={query.allocation}
+              onChange={(e) => setQuery({ ...query, allocation: e.target.value })}
             >
               <option value="">any</option>
-              <option value="active">active</option>
-              <option value="ignored">ignored</option>
+              <option value="TRAINABLE">trainable</option>
+              <option value="RESERVED_EVALUATION">reserved (evaluation)</option>
+              <option value="IGNORED">ignored</option>
             </Select>
           </Field>
           <div className="flex items-end gap-2">
@@ -124,7 +137,11 @@ export default function Samples() {
                 },
                 { key: 'domain', header: 'Domain' },
                 { key: 'quality', header: 'Quality' },
-                { key: 'status', header: 'Status', render: (r) => <Badge>{String(r.status)}</Badge> },
+                {
+                  key: 'allocation',
+                  header: 'Allocation',
+                  render: (r) => <Badge>{String(r.allocation)}</Badge>,
+                },
                 {
                   key: 'actions',
                   header: '',
@@ -153,9 +170,17 @@ export default function Samples() {
         <Card className="mt-4">
           <div className="mb-2 flex items-center justify-between">
             <h2 className="font-medium">Sample {selected}</h2>
-            <Button variant="ghost" onClick={() => setSelected(null)}>
-              Close
-            </Button>
+            <div className="flex gap-2">
+              <Button variant="ghost" onClick={() => void reallocate('RESERVED_EVALUATION')}>
+                Reserve for evaluation
+              </Button>
+              <Button variant="ghost" onClick={() => void reallocate('IGNORED')}>
+                Ignore
+              </Button>
+              <Button variant="ghost" onClick={() => setSelected(null)}>
+                Close
+              </Button>
+            </div>
           </div>
           {detail.isLoading ? (
             <p className="text-sm text-slate-500">Loading…</p>
@@ -176,10 +201,14 @@ export default function Samples() {
                 </dd>
               </div>
               <div>
-                <dt className="text-slate-500">Status / quality</dt>
+                <dt className="text-slate-500">Allocation / quality</dt>
                 <dd>
-                  {detail.data?.status} / {detail.data?.quality ?? '—'}
+                  {detail.data?.allocation} / {detail.data?.quality ?? '—'}
                 </dd>
+              </div>
+              <div>
+                <dt className="text-slate-500">Reserved at</dt>
+                <dd>{detail.data?.reserved_at ?? '—'}</dd>
               </div>
             </dl>
           )}

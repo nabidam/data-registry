@@ -16,7 +16,8 @@ class DatasetFilters(BaseModel):
     min_quality: float | None = None
     max_quality: float | None = None
     text_contains: str | None = None
-    include_ignored: bool = False
+    # Allocation is never a filter: the build context is scoped to exactly one
+    # allocation, so reserved and ignored samples can never be filtered back in.
 
     def where_sql(self) -> str:
         """Render filters as a SQL predicate over the canonical Parquet schema."""

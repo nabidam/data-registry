@@ -1,10 +1,17 @@
-"""Evaluation sets: benchmark collections independent from train/test splits."""
+"""Evaluation sets: benchmark collections built only from reserved samples.
+
+An evaluation set is a view over the RESERVED_EVALUATION pool — the samples the
+ingestion pipeline held back. It is independent of train/validation/test splits,
+and a reserved sample may belong to several collections at once without ever
+becoming trainable again.
+"""
 
 from pathlib import Path
 
 import polars as pl
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.allocation import Allocation
 from core.config import settings
 from models import EvaluationSet
 from services.dataset_builder.builder import make_context
@@ -21,13 +28,19 @@ async def build_evaluation_set(
     limit: int | None = None,
     seed: int = 42,
 ) -> EvaluationSet:
-    """Materialize an evaluation set from explicit ids (manual/imported) or filters (sampled)."""
+    """Materialize a set from explicit ids (manual/imported) or filters (sampled).
+
+    Explicit ids that are not reserved are silently dropped: the reserved pool is
+    the only source of evaluation data.
+    """
     storage = get_storage()
     work = Path(settings.work_dir) / f"eval_{eval_set.id}"
     work.mkdir(parents=True, exist_ok=True)
     local = work / "data.parquet"
 
-    ctx = await make_context(session, filters or DatasetFilters(), None)
+    ctx = await make_context(
+        session, filters or DatasetFilters(), None, Allocation.RESERVED_EVALUATION
+    )
     try:
         where = "TRUE"
         if sample_ids:

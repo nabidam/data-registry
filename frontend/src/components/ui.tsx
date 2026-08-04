@@ -77,13 +77,16 @@ export function Textarea(props: React.TextareaHTMLAttributes<HTMLTextAreaElement
   return <textarea {...props} className={`${inputClass} ${props.className ?? ''}`} />
 }
 
+const TONES: Record<string, string> = {
+  ready: 'bg-emerald-100 text-emerald-800',
+  TRAINABLE: 'bg-emerald-100 text-emerald-800',
+  failed: 'bg-red-100 text-red-800',
+  RESERVED_EVALUATION: 'bg-amber-100 text-amber-800',
+  IGNORED: 'bg-slate-200 text-slate-600',
+}
+
 export function Badge({ children }: { children: ReactNode }) {
-  const tone =
-    children === 'ready'
-      ? 'bg-emerald-100 text-emerald-800'
-      : children === 'failed'
-        ? 'bg-red-100 text-red-800'
-        : 'bg-slate-100 text-slate-700'
+  const tone = TONES[String(children)] ?? 'bg-slate-100 text-slate-700'
   return <span className={`rounded px-1.5 py-0.5 text-xs font-medium ${tone}`}>{children}</span>
 }
 
