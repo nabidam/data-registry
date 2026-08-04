@@ -9,8 +9,19 @@ DuckDB queries the Parquet files directly — no Spark, no data lake, no workers
 
 ## Quick start
 
+The default Compose file expects an externally managed PostgreSQL database. Create `.env` from
+the example and set `DATABASE_URL` to a URI reachable from the backend container:
+
 ```bash
+cp .env.example .env
+# Edit DATABASE_URL in .env
 docker compose up --build
+```
+
+For a self-contained local stack, including PostgreSQL, use the full Compose file instead:
+
+```bash
+docker compose -f docker-compose.full.yml up --build
 ```
 
 This local Compose build deliberately omits the optional evaluation group, so the host does not
@@ -30,7 +41,7 @@ committed `backend/uv.lock` file.
 | UI             | http://localhost:5173  |
 | API + OpenAPI  | http://localhost:8001/docs |
 | MinIO console  | http://localhost:9001 (minioadmin / minioadmin) |
-| Postgres       | localhost:5433 (mtreg / mtreg) |
+| Postgres (full Compose only) | localhost:5433 (mtreg / mtreg) |
 
 Migrations run automatically when the backend container boots.
 

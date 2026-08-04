@@ -1,4 +1,22 @@
 services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: mtreg
+      POSTGRES_PASSWORD: mtreg
+      POSTGRES_DB: mtreg
+    ports:
+      # 5433 on the host to avoid clashing with a local Postgres install
+      - "5433:5432"
+    volumes:
+      # Postgres 18 images want a single mount at /var/lib/postgresql
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mtreg"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
   minio:
     image: minio/minio:latest
     command: server /data --console-address ":9001"
@@ -34,7 +52,7 @@ services:
         INSTALL_EVALUATION: "false"
     command: ["/app/entrypoint.sh", "--reload"]
     environment:
-      DATABASE_URL: ${DATABASE_URL}
+      DATABASE_URL: postgresql+asyncpg://mtreg:mtreg@postgres:5432/mtreg
       STORAGE_BACKEND: s3
       S3_BUCKET: mtreg
       S3_ENDPOINT_URL: http://minio:9000
@@ -49,6 +67,8 @@ services:
     volumes:
       - ./backend:/app
     depends_on:
+      postgres:
+        condition: service_healthy
       minio:
         condition: service_healthy
 
@@ -65,4 +85,5 @@ services:
       - backend
 
 volumes:
+  pgdata:
   miniodata:
