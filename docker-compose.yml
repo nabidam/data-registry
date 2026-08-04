@@ -48,6 +48,7 @@ services:
       - "8001:8000"
     volumes:
       - ./backend:/app
+    extra_hosts: ["host.docker.internal:host-gateway"]
     depends_on:
       minio:
         condition: service_healthy
