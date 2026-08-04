@@ -20,6 +20,24 @@ class Storage(ABC):
         """Upload a local file, return its URI."""
 
     @abstractmethod
+    def create_multipart_upload(self, key: str) -> str:
+        """Start a resumable upload and return its opaque upload id."""
+
+    @abstractmethod
+    def upload_multipart_part(self, key: str, upload_id: str, part_number: int, file) -> str:
+        """Stream one part and return the storage ETag needed to complete it."""
+
+    @abstractmethod
+    def complete_multipart_upload(
+        self, key: str, upload_id: str, parts: list[dict[str, object]]
+    ) -> str:
+        """Finalize a multipart upload and return its canonical URI."""
+
+    @abstractmethod
+    def abort_multipart_upload(self, key: str, upload_id: str) -> None:
+        """Discard an incomplete multipart upload."""
+
+    @abstractmethod
     def get_file(self, key: str, local_path: Path) -> Path:
         """Download an object to a local path."""
 

@@ -61,6 +61,36 @@ class S3Storage(Storage):
         self.client.upload_file(str(local_path), self.bucket, key.lstrip("/"))
         return self.uri(key)
 
+    def create_multipart_upload(self, key: str) -> str:
+        response = self.client.create_multipart_upload(Bucket=self.bucket, Key=key.lstrip("/"))
+        return response["UploadId"]
+
+    def upload_multipart_part(self, key: str, upload_id: str, part_number: int, file) -> str:
+        response = self.client.upload_part(
+            Bucket=self.bucket,
+            Key=key.lstrip("/"),
+            UploadId=upload_id,
+            PartNumber=part_number,
+            Body=file,
+        )
+        return response["ETag"]
+
+    def complete_multipart_upload(
+        self, key: str, upload_id: str, parts: list[dict[str, object]]
+    ) -> str:
+        self.client.complete_multipart_upload(
+            Bucket=self.bucket,
+            Key=key.lstrip("/"),
+            UploadId=upload_id,
+            MultipartUpload={"Parts": parts},
+        )
+        return self.uri(key)
+
+    def abort_multipart_upload(self, key: str, upload_id: str) -> None:
+        self.client.abort_multipart_upload(
+            Bucket=self.bucket, Key=key.lstrip("/"), UploadId=upload_id
+        )
+
     def get_file(self, key: str, local_path: Path) -> Path:
         Path(local_path).parent.mkdir(parents=True, exist_ok=True)
         self.client.download_file(self.bucket, key.lstrip("/"), str(local_path))

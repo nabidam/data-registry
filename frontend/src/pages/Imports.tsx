@@ -8,6 +8,10 @@ import { api } from '@/lib/api'
 import type { Batch, ReservationDefaults, Row, Source } from '@/types'
 
 type Inspection = { format: string; columns: string[]; preview: Row[] }
+type UploadStart = { batch: Batch; upload_id: string; part_size: number }
+type UploadedPart = { part_number: number; etag: string }
+
+const INSPECTION_LIMIT_BYTES = 16 * 1024 * 1024
 
 export default function Imports() {
   const sources = useList<Source>('sources', { limit: 200 })
@@ -18,6 +22,7 @@ export default function Imports() {
   const [inspection, setInspection] = useState<Inspection | null>(null)
   const [error, setError] = useState<unknown>(null)
   const [busy, setBusy] = useState(false)
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null)
   const [form, setForm] = useState({
     batch_name: '',
     src_lang: 'en',
@@ -45,6 +50,13 @@ export default function Imports() {
   const effectiveSelector = form.evaluation_selector || defaults.data?.evaluation_selector
 
   async function inspect(f: File) {
+    // Sending a multi-GB file merely to discover its first few columns was the
+    // first source of gateway failures. Large imports use the editable defaults
+    // below; a small representative file can still be inspected normally.
+    if (f.size > INSPECTION_LIMIT_BYTES) {
+      setInspection(null)
+      return
+    }
     setError(null)
     const body = new FormData()
     body.append('file', f)
@@ -71,11 +83,35 @@ export default function Imports() {
     if (!file) return
     setBusy(true)
     setError(null)
-    const body = new FormData()
-    body.append('file', file)
-    Object.entries(form).forEach(([k, v]) => v && body.append(k, v))
     try {
-      await api.upload<Batch>('/imports', body)
+      const started = await api.post<UploadStart>('/imports/start', {
+        batch_name: form.batch_name,
+        filename: file.name,
+        size: file.size,
+      })
+      const parts: UploadedPart[] = []
+      const totalParts = Math.ceil(file.size / started.part_size)
+      for (let index = 0; index < totalParts; index += 1) {
+        const body = new FormData()
+        body.append('upload_id', started.upload_id)
+        // A named File keeps the raw object key stable across every part.
+        body.append(
+          'file',
+          new File([file.slice(index * started.part_size, (index + 1) * started.part_size)], file.name, {
+            type: file.type,
+          }),
+        )
+        const part = await api.upload<UploadedPart>(
+          `/imports/${started.batch.id}/parts/${index + 1}`,
+          body,
+        )
+        parts.push(part)
+        setUploadProgress((index + 1) / totalParts)
+      }
+      const complete = Object.fromEntries(
+        Object.entries(form).filter(([, value]) => value !== ''),
+      )
+      await api.post<Batch>(`/imports/${started.batch.id}/complete`, { ...complete, parts })
       qc.invalidateQueries({ queryKey: ['batches'] })
       setFile(null)
       setInspection(null)
@@ -84,19 +120,28 @@ export default function Imports() {
       setError(err)
     } finally {
       setBusy(false)
+      setUploadProgress(null)
     }
   }
 
   const columnSelect = (key: keyof typeof form, label: string, optional = false) => (
     <Field label={label}>
-      <Select value={form[key]} onChange={(e) => setForm({ ...form, [key]: e.target.value })}>
-        {optional && <option value="">—</option>}
-        {(inspection?.columns ?? [form[key]]).map((c) => (
-          <option key={c} value={c}>
-            {c}
-          </option>
-        ))}
-      </Select>
+      {inspection ? (
+        <Select value={form[key]} onChange={(e) => setForm({ ...form, [key]: e.target.value })}>
+          {optional && <option value="">—</option>}
+          {inspection.columns.map((c) => (
+            <option key={c} value={c}>
+              {c}
+            </option>
+          ))}
+        </Select>
+      ) : (
+        <Input
+          value={form[key]}
+          placeholder={optional ? 'Optional column name' : undefined}
+          onChange={(e) => setForm({ ...form, [key]: e.target.value })}
+        />
+      )}
     </Field>
   )
 
@@ -220,7 +265,13 @@ export default function Imports() {
             />
           </Field>
           <div className="flex items-end">
-            <Button disabled={busy || !file}>{busy ? 'Importing…' : 'Import'}</Button>
+            <Button disabled={busy || !file}>
+              {uploadProgress === null
+                ? busy
+                  ? 'Preparing import…'
+                  : 'Import'
+                : `Uploading ${Math.round(uploadProgress * 100)}%`}
+            </Button>
           </div>
         </form>
       </Card>

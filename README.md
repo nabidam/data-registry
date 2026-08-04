@@ -48,9 +48,12 @@ Migrations run automatically when the backend container boots.
 ## Workflow
 
 1. **Sources** — register where data comes from (WMT, Wikipedia, Human, …).
-2. **Imports** — upload CSV/TSV/JSON/JSONL/TMX/XLSX/Parquet. Each import is normalized
-   into one canonical schema and stored as an immutable batch (`batches/batch_N/data.parquet`),
-   with per-sample metadata copied into Postgres.
+2. **Imports** — upload CSV/TSV/JSON/JSONL/TMX/XLSX/Parquet. The browser sends large files to
+   MinIO in bounded 16 MB multipart requests, then the API accepts the import immediately and
+   normalizes it in-process. Each immutable batch is stored as canonical Parquet shards
+   (`batches/batch_N/part-*.parquet`) with per-sample metadata copied into Postgres. Set
+   `IMPORT_UPLOAD_PART_SIZE_MB` (minimum 5) and `PARQUET_SHARD_SIZE_MB` (default 256) to suit
+   the deployment's proxy and object-size limits.
 3. **Evaluation reservation** — part of the same import: the selection pipeline holds a
    slice of every batch back as `RESERVED_EVALUATION` *before* the batch is eligible for
    training. Nothing downstream can opt out of this.

@@ -43,7 +43,8 @@ SAMPLE_COLUMNS = (
 
 
 def batch_keys(batch_id: int, filename: str) -> tuple[str, str]:
-    return f"raw/batch_{batch_id}/{filename}", f"batches/batch_{batch_id}/data.parquet"
+    """Object keys for an import and its sharded normalized output."""
+    return f"raw/batch_{batch_id}/{filename}", f"batches/batch_{batch_id}"
 
 
 async def _reserve_sample_ids(session: AsyncSession, n: int) -> list[int]:
@@ -82,14 +83,51 @@ async def ingest_file(
     session.add(batch)
     await session.flush()  # need the id for storage keys and sample rows
 
-    raw_key, parquet_key = batch_keys(batch.id, filename)
+    raw_key, _ = batch_keys(batch.id, filename)
     batch.raw_uri = storage.put_file(local_file, raw_key)
+
+    return await ingest_stored_file(
+        session,
+        batch=batch,
+        local_file=local_file,
+        filename=filename,
+        src_lang=src_lang,
+        tgt_lang=tgt_lang,
+        domain=domain,
+        mapping=mapping,
+        fmt=fmt,
+        policy=policy,
+    )
+
+
+async def ingest_stored_file(
+    session: AsyncSession,
+    *,
+    batch: Batch,
+    local_file: Path,
+    filename: str,
+    src_lang: str,
+    tgt_lang: str,
+    domain: str | None,
+    mapping: ColumnMapping,
+    fmt: str | None = None,
+    policy: ReservationPolicy | None = None,
+) -> Batch:
+    """Normalize a raw object already registered on ``batch``.
+
+    This is used by the resumable import flow after MinIO has received every
+    upload part. Keeping it separate means the request which completes an
+    upload can return before CPU-heavy normalization starts.
+    """
+    storage = get_storage()
+    fmt = (fmt or detect_format(filename)).lower()
+    _, parquet_prefix = batch_keys(batch.id, filename)
 
     df = normalize(
         read_any(local_file, fmt),
         mapping,
         batch_id=batch.id,
-        source_id=source_id,
+        source_id=batch.source_id,
         src_lang=src_lang,
         tgt_lang=tgt_lang,
         domain=domain,
@@ -117,14 +155,20 @@ async def ingest_file(
 
     work = Path(settings.work_dir) / f"batch_{batch.id}"
     work.mkdir(parents=True, exist_ok=True)
-    local_parquet = work / "data.parquet"
-    df.write_parquet(local_parquet, compression="zstd")
+    shards = _write_parquet_shards(df, work)
     reservation["manifest"] = {
         **reservation.get("selection", {}).get("manifest", {}),
-        "data_parquet_sha256": _sha256_file(local_parquet),
+        "parquet_shards": [
+            {"name": shard.name, "bytes": shard.stat().st_size, "sha256": _sha256_file(shard)}
+            for shard in shards
+        ],
     }
-    batch.parquet_uri = storage.put_file(local_parquet, parquet_key)
-    local_parquet.unlink(missing_ok=True)
+    for shard in shards:
+        storage.put_file(shard, f"{parquet_prefix}/{shard.name}")
+        shard.unlink(missing_ok=True)
+    # DuckDB reads this glob as one relation. The individual files remain
+    # bounded and immutable, so a large batch never becomes one giant object.
+    batch.parquet_uri = storage.uri(f"{parquet_prefix}/*.parquet")
 
     await _copy_samples(session, df)
 
@@ -140,6 +184,39 @@ async def ingest_file(
         reservation["reserved"],
     )
     return batch
+
+
+def _write_parquet_shards(df: pl.DataFrame, work: Path) -> list[Path]:
+    """Write compressed Parquet shards, splitting until each is within the limit."""
+    max_bytes = settings.parquet_shard_size_mb * 1024 * 1024
+    if max_bytes < 1:
+        raise ValueError("PARQUET_SHARD_SIZE_MB must be at least 1")
+
+    estimated_bytes = max(df.estimated_size(), 1)
+    initial_rows = max(1, int(df.height * max_bytes / estimated_bytes))
+    shards: list[Path] = []
+
+    def write_slice(offset: int, length: int) -> None:
+        candidate = work / f".shard-{len(shards):05d}.parquet"
+        df.slice(offset, length).write_parquet(candidate, compression="zstd")
+        if candidate.stat().st_size <= max_bytes:
+            final = work / f"part-{len(shards):05d}.parquet"
+            candidate.replace(final)
+            shards.append(final)
+            return
+
+        if length == 1:
+            candidate.unlink(missing_ok=True)
+            raise ValueError("one normalized row exceeds PARQUET_SHARD_SIZE_MB")
+
+        candidate.unlink(missing_ok=True)
+        left = length // 2
+        write_slice(offset, left)
+        write_slice(offset + left, length - left)
+
+    for offset in range(0, df.height, initial_rows):
+        write_slice(offset, min(initial_rows, df.height - offset))
+    return shards
 
 
 async def _copy_samples(session: AsyncSession, df: pl.DataFrame) -> None:

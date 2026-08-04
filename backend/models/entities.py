@@ -44,7 +44,7 @@ class Source(Base, TimestampMixin):
 
 
 class Batch(Base, TimestampMixin):
-    """One immutable ingestion. Its normalized rows live in a single Parquet file."""
+    """One immutable ingestion. Its normalized rows live in Parquet shards."""
 
     __tablename__ = "batches"
 

@@ -29,6 +29,15 @@ class Settings(BaseSettings):
     s3_secret_key: str = "minioadmin"
     s3_use_ssl: bool = False
 
+    # The largest request sent to the API while an import is uploading. Keeping
+    # this well below typical proxy limits prevents multi-GB browser uploads
+    # from becoming one long-lived gateway request.
+    import_upload_part_size_mb: int = 16
+
+    # Normalized batch data is stored as a set of immutable Parquet shards.
+    # The limit applies to the compressed file written to object storage.
+    parquet_shard_size_mb: int = 256
+
     gcs_bucket: str = "mtreg"
 
     # Experiment tracking: we only store references to runs.

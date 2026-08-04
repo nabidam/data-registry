@@ -29,6 +29,20 @@ class LocalStorage(Storage):
             shutil.copyfile(local_path, dest)
         return str(dest)
 
+    def create_multipart_upload(self, key: str) -> str:
+        raise RuntimeError("resumable imports require S3-compatible object storage")
+
+    def upload_multipart_part(self, key: str, upload_id: str, part_number: int, file) -> str:
+        raise RuntimeError("resumable imports require S3-compatible object storage")
+
+    def complete_multipart_upload(
+        self, key: str, upload_id: str, parts: list[dict[str, object]]
+    ) -> str:
+        raise RuntimeError("resumable imports require S3-compatible object storage")
+
+    def abort_multipart_upload(self, key: str, upload_id: str) -> None:
+        return None
+
     def get_file(self, key: str, local_path: Path) -> Path:
         src = self._path(key)
         Path(local_path).parent.mkdir(parents=True, exist_ok=True)
