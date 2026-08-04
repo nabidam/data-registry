@@ -1,0 +1,123 @@
+import { useState } from 'react'
+
+import { DataTable } from '@/components/DataTable'
+import { Button, Card, ErrorBox, Field, Input, PageHeader, Select } from '@/components/ui'
+import { useCreate, useList } from '@/hooks/useResource'
+import type { Dataset, Row, Split } from '@/types'
+
+export default function Splits() {
+  const splits = useList<Split>('splits')
+  const datasets = useList<Dataset>('datasets', { limit: 200 })
+  const create = useCreate<Split>('splits')
+  const [form, setForm] = useState({
+    dataset_id: '',
+    name: 'default',
+    version: '1',
+    seed: '42',
+    train: '0.9',
+    validation: '0.05',
+    test: '0.05',
+  })
+
+  return (
+    <>
+      <PageHeader
+        title="Splits"
+        subtitle="Reproducible train/validation/test recipes. Existing splits are never modified."
+      />
+      <ErrorBox error={create.error} />
+
+      <Card className="mb-4">
+        <form
+          className="grid gap-3 md:grid-cols-4"
+          onSubmit={(e) => {
+            e.preventDefault()
+            create.mutate({
+              dataset_id: Number(form.dataset_id),
+              name: form.name,
+              version: Number(form.version),
+              seed: Number(form.seed),
+              ratios: {
+                train: Number(form.train),
+                validation: Number(form.validation),
+                test: Number(form.test),
+              },
+            })
+          }}
+        >
+          <Field label="Dataset">
+            <Select
+              required
+              value={form.dataset_id}
+              onChange={(e) => setForm({ ...form, dataset_id: e.target.value })}
+            >
+              <option value="">select…</option>
+              {datasets.data?.map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.name}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <Field label="Name">
+            <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+          </Field>
+          <Field label="Version">
+            <Input
+              type="number"
+              value={form.version}
+              onChange={(e) => setForm({ ...form, version: e.target.value })}
+            />
+          </Field>
+          <Field label="Seed">
+            <Input
+              type="number"
+              value={form.seed}
+              onChange={(e) => setForm({ ...form, seed: e.target.value })}
+            />
+          </Field>
+          <Field label="Train">
+            <Input
+              type="number"
+              step="0.01"
+              value={form.train}
+              onChange={(e) => setForm({ ...form, train: e.target.value })}
+            />
+          </Field>
+          <Field label="Validation">
+            <Input
+              type="number"
+              step="0.01"
+              value={form.validation}
+              onChange={(e) => setForm({ ...form, validation: e.target.value })}
+            />
+          </Field>
+          <Field label="Test">
+            <Input
+              type="number"
+              step="0.01"
+              value={form.test}
+              onChange={(e) => setForm({ ...form, test: e.target.value })}
+            />
+          </Field>
+          <div className="flex items-end">
+            <Button disabled={create.isPending}>Create split</Button>
+          </div>
+        </form>
+      </Card>
+
+      <DataTable
+        loading={splits.isLoading}
+        rows={splits.data as unknown as Row[]}
+        columns={[
+          { key: 'id', header: 'ID', width: '60px' },
+          { key: 'dataset_id', header: 'Dataset' },
+          { key: 'name', header: 'Name' },
+          { key: 'version', header: 'Version' },
+          { key: 'seed', header: 'Seed' },
+          { key: 'ratios', header: 'Ratios', render: (r) => JSON.stringify(r.ratios) },
+        ]}
+      />
+    </>
+  )
+}

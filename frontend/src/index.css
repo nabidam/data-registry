@@ -1,0 +1,15 @@
+@import 'tailwindcss';
+
+:root {
+  color-scheme: light;
+}
+
+body {
+  @apply bg-slate-50 text-slate-900 antialiased;
+  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+
+/* Research tool: dense tables, no decoration. */
+table {
+  font-variant-numeric: tabular-nums;
+}
