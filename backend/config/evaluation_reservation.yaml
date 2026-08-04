@@ -1,0 +1,64 @@
+# Policy imported from the supplied MT test-set builder.  It is deliberately
+# deployment-owned: set EVALUATION_RESERVATION_CONFIG to use a different copy.
+description: >-
+  Contamination-safe evaluation reservation uses deterministic domain and
+  length quotas, MinHash and embedding deduplication, LaBSE diversity-aware
+  selection, document holdout, and an embedding near-duplicate purge.
+
+input:
+  # Input IDs such as "document:chunk" are reduced to the document portion.
+  id_separator: ":"
+
+selection:
+  domain_allocation: flattened
+  flatten_alpha: 0.5
+  min_per_domain: 50
+  length_buckets: [0, 15, 40, 80, 999999]
+  length_bucket_shares: [0.20, 0.35, 0.30, 0.15]
+  hard_phenomena_min_share:
+    has_math: 0.08
+    has_numbers_units: 0.15
+    has_acronyms: 0.15
+    has_mixed_script: 0.10
+  rare_term_top_quantile: 0.90
+  rare_term_min_share: 0.10
+  # Set to null to let selection use as many documents as necessary.
+  max_test_documents: 30
+
+features:
+  rare_token_max_count: 3
+
+dedup:
+  # Every rejected duplicate is permanently QUARANTINED in the registry rather
+  # than deleted, so it cannot enter training or an evaluation set.
+  enabled: true
+  minhash_enabled: true
+  minhash_threshold: 0.85
+  embedding_dedup_enabled: true
+  embedding_cosine_threshold: 0.95
+
+embeddings:
+  # LaBSE is downloaded by sentence-transformers on the first eligible import
+  # unless the Hugging Face cache already contains it. Set false for the same
+  # TF-IDF + SVD fallback used by the source script.
+  enabled: true
+  model: sentence-transformers/LaBSE
+  batch_size: 64
+  device: auto
+  cache_path: evaluation_reservation/embeddings.npy
+
+diversity:
+  strategy: kcenter
+
+contamination:
+  document_level_holdout: true
+  near_dup_check_enabled: true
+  near_dup_cosine_threshold: 0.92
+
+splits:
+  dev_test_split: true
+  dev_fraction: 0.5
+
+gold_subset:
+  enabled: true
+  size: 120

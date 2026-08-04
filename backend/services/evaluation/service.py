@@ -30,8 +30,9 @@ async def build_evaluation_set(
 ) -> EvaluationSet:
     """Materialize a set from explicit ids (manual/imported) or filters (sampled).
 
-    Explicit ids that are not reserved are silently dropped: the reserved pool is
-    the only source of evaluation data.
+Explicit ids that are not reserved are silently dropped: the reserved pool is
+the only source of evaluation data. Contamination-quarantined rows are never
+evaluation examples.
     """
     storage = get_storage()
     work = Path(settings.work_dir) / f"eval_{eval_set.id}"

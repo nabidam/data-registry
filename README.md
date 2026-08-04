@@ -49,12 +49,15 @@ Every sample has exactly one allocation, decided during import:
 | --------------------- | ----------------------- | ----------------------------- |
 | `TRAINABLE`           | yes                     | no                            |
 | `RESERVED_EVALUATION` | never                   | yes                           |
+| `QUARANTINED`         | no                      | no                            |
 | `IGNORED`             | no                      | no                            |
 
-The dataset builder is scoped to a single allocation and defaults to `TRAINABLE`, so reserved
-and ignored samples are excluded with no configuration — there is no flag that lets them back in.
-Reservation is permanent: `samples.reserved_at` is never cleared, so even un-ignoring a reserved
-sample returns it to `RESERVED_EVALUATION`, never to the trainable pool.
+The dataset builder is scoped to a single allocation and defaults to `TRAINABLE`, so reserved,
+quarantined, and ignored samples are excluded with no configuration — there is no flag that lets
+them back in.
+Reservation and contamination quarantine are permanent: `samples.reserved_at` and
+`samples.quarantined_at` are never cleared, so an un-ignored protected row cannot return to the
+trainable pool.
 
 ### Reservation size and strategy
 
@@ -65,15 +68,46 @@ Reserved per import: `min(rows × EVALUATION_PERCENT / 100, EVALUATION_MAX_SAMPL
 | ------------------------ | ----------- | ------------------------------------------ |
 | `EVALUATION_PERCENT`     | `2.0`       | share of each import to reserve            |
 | `EVALUATION_MAX_SAMPLES` | `5000`      | hard cap on the reserved count             |
-| `EVALUATION_SELECTOR`    | `heuristic` | selection strategy                         |
+| `EVALUATION_SELECTOR`    | `contamination_safe` | selection strategy              |
 | `RANDOM_SEED`            | `42`        | makes selection reproducible               |
 
-Selection is **not** random by default. The `heuristic` selector scores each pair for benchmark
-quality (sentence length, source/target length agreement, lexical richness, punctuation, noise
-and URL penalties, quality hints) and then spreads the picks across language-pair/domain strata,
-so the reserved pool mirrors the shape of the import. Strategies live in
-`services/evaluation/selectors.py` and are registered by name; a new algorithm is one function
-plus one dict entry, and every import can override the settings per request.
+Selection is **not** random by default. `contamination_safe` ports the supplied test-set builder's
+full pipeline: feature annotation (source length, math, numbers/units, acronyms, mixed script, and
+rare terms); exact, MinHash, and embedding deduplication; domain × source-length quotas;
+flattened or proportional domain allocation; candidate-document restriction; k-center diversity
+selection; hard-phenomenon top-ups; document holdout; and a cross-document embedding purge. The
+importer assigns every selected benchmark row to `dev` or `test` with a deterministic stratified
+split and records its `human_verify` gold-subset flag in the immutable batch Parquet.
+
+Its policy lives in `backend/config/evaluation_reservation.yaml`; set
+`EVALUATION_RESERVATION_CONFIG` to a deployment copy. The import target still comes from
+`EVALUATION_PERCENT` and `EVALUATION_MAX_SAMPLES`, rather than the standalone script's
+`total_size`. `heuristic` and `random` remain available as per-import overrides.
+
+Map **Document ID column** on Imports when the source has document/chunk IDs. The default `:`
+separator turns `paper-17:004` into document `paper-17`; configure `input.id_separator` in the
+policy for another format. With no mapping, each pair is treated as its own document, so only
+near-duplicate protection can quarantine additional rows.
+
+The default policy enables MinHash and LaBSE (`sentence-transformers/LaBSE`). Backend dependencies
+include `numpy`, `scikit-learn`, `datasketch`, `sentence-transformers`, and CPU-compatible `torch`.
+On the first eligible `contamination_safe` import, sentence-transformers downloads the configured
+model into its Hugging Face cache if it is absent. Later imports reuse that cache. This fetch does
+not download a Docker image. Set `embeddings.enabled: false` only when an explicit TF-IDF fallback
+fits the deployment; the batch statistics identify the embedding backend used.
+
+`RESERVED_EVALUATION` contains only the selected benchmark rows. Duplicate rows removed during
+exact, MinHash, or embedding deduplication, plus rows excluded because they share a selected
+document or exceed the cross-document near-duplicate threshold, are `QUARANTINED`. They cannot
+enter a training snapshot or an evaluation set.
+
+### Reservation records
+
+Each import stores selection annotations in its immutable batch Parquet: `document_id`, feature
+flags, `evaluation_split` (`dev` or `test` for reserved rows), and `human_verify`. Batch statistics
+store the policy snapshot, seed, feature and quota results, each deduplication and quarantine count,
+allocation counts, selected-ID hash, and SHA-256 of the batch Parquet. Use those records to compare
+repeated imports or to audit an evaluation-set materialization without changing the batch.
 
 ### Historical integrity
 
@@ -113,6 +147,7 @@ backend/
     dataset_builder/ DuckDB query construction over Parquet
     snapshots/       immutable exports + manifest
     evaluation/      selectors, import-time reservation, benchmark sets, contamination
+  config/        deployment-owned reservation policy
   storage/      object storage interface + backends
   utils/        DuckDB helpers
 frontend/       Vite + React + TypeScript + Tailwind

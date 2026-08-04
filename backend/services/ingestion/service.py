@@ -1,10 +1,11 @@
 """Ingestion: raw file -> immutable batch (Parquet) + sample metadata (Postgres).
 
 Pipeline: read -> normalize -> canonical samples -> evaluation selection ->
-reserved / trainable. Reservation happens here, before the batch is visible to
+reserved / quarantined / trainable. Reservation happens here, before the batch is visible to
 the dataset builder, so evaluation data can never leak into a snapshot.
 """
 
+import hashlib
 import logging
 from datetime import UTC, datetime
 from pathlib import Path
@@ -35,6 +36,7 @@ SAMPLE_COLUMNS = (
     "quality",
     "allocation",
     "reserved_at",
+    "quarantined_at",
     "created_at",
 )
 
@@ -103,6 +105,7 @@ async def ingest_file(
         "tgt_lang",
         "domain",
         "quality",
+        "document_id",
         "source_text",
         "target_text",
         "meta",
@@ -115,6 +118,10 @@ async def ingest_file(
     work.mkdir(parents=True, exist_ok=True)
     local_parquet = work / "data.parquet"
     df.write_parquet(local_parquet, compression="zstd")
+    reservation["manifest"] = {
+        **reservation.get("selection", {}).get("manifest", {}),
+        "data_parquet_sha256": _sha256_file(local_parquet),
+    }
     batch.parquet_uri = storage.put_file(local_parquet, parquet_key)
     local_parquet.unlink(missing_ok=True)
 
@@ -159,6 +166,7 @@ async def _copy_samples(session: AsyncSession, df: pl.DataFrame) -> None:
                 r["quality"],
                 r["allocation"],
                 now if r["allocation"] == Allocation.RESERVED_EVALUATION else None,
+                now if r["allocation"] == Allocation.QUARANTINED else None,
                 now,
             )
             for r in chunk.iter_rows(named=True)
@@ -178,3 +186,11 @@ def _batch_stats(df: pl.DataFrame) -> dict:
         "language_pairs": dict(zip(by_pair["pair"], by_pair["len"], strict=True)),
         "domains": {str(k): v for k, v in zip(by_domain["domain"], by_domain["len"], strict=True)},
     }
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()

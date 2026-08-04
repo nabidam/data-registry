@@ -13,8 +13,11 @@ from math import ceil
 
 import polars as pl
 
-# (rows, n, seed) -> reserved sample ids. ``rows`` is the canonical schema.
-Selector = Callable[[pl.DataFrame, int, int], list[int]]
+from services.evaluation.contamination_safe import SelectionResult, select as safe_select
+from services.evaluation.reservation_config import load_contamination_safe_config
+
+# (rows, n, seed) -> reservation selection. ``rows`` is the canonical schema.
+Selector = Callable[[pl.DataFrame, int, int], list[int] | SelectionResult]
 
 _URL = r"(https?://|www\.)"
 
@@ -122,7 +125,13 @@ def random_select(rows: pl.DataFrame, n: int, seed: int) -> list[int]:
     )
 
 
+def contamination_safe_select(rows: pl.DataFrame, n: int, seed: int) -> SelectionResult:
+    """Ported test-set selection with document and near-duplicate protection."""
+    return safe_select(rows, n, seed, load_contamination_safe_config())
+
+
 SELECTORS: dict[str, Selector] = {
+    "contamination_safe": contamination_safe_select,
     "heuristic": heuristic_select,
     "random": random_select,
 }

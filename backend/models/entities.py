@@ -74,11 +74,15 @@ class Sample(Base):
     tgt_lang: Mapped[str] = mapped_column(String(16), nullable=False)
     domain: Mapped[str | None] = mapped_column(String(64))
     quality: Mapped[float | None] = mapped_column(Float)
-    # TRAINABLE | RESERVED_EVALUATION | IGNORED — see core/allocation.py.
+    # TRAINABLE | RESERVED_EVALUATION | QUARANTINED | IGNORED — see core/allocation.py.
     allocation: Mapped[str] = mapped_column(String(24), default=Allocation.TRAINABLE)
     # Set the first time a sample is reserved and never cleared: reservation is
     # permanent, so a sample can never drift back into the trainable pool.
     reserved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Set for rows excluded by the import-time contamination pass. Like
+    # reservation, quarantine is permanent so an annotation cannot leak the
+    # row back into a later training snapshot.
+    quarantined_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     __table_args__ = (

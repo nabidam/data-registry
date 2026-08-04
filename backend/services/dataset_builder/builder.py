@@ -4,7 +4,7 @@ Nothing is copied or materialized here. A dataset definition is a query over
 the immutable batch Parquet files; only snapshots write files.
 
 Every context is scoped to exactly one allocation and defaults to TRAINABLE, so
-reserved evaluation and ignored samples are excluded with no configuration —
+reserved evaluation, contamination-quarantined, and ignored samples are excluded with no configuration —
 that is what makes builds deterministic. Postgres is the authority on
 allocation; the copy inside the batch Parquet is only the value at ingest time.
 """

@@ -8,10 +8,12 @@ Invariants:
 * ``TRAINABLE``           may appear in snapshots.
 * ``RESERVED_EVALUATION`` never appears in any training snapshot, forever.
 * ``IGNORED``             participates in neither training nor evaluation.
+* ``QUARANTINED``         is held out from training after contamination checks
+  but is not an evaluation example.
 
-A reserved sample never becomes trainable again; ``Sample.reserved_at`` records
-the reservation permanently, so even un-ignoring a sample restores it to
-``RESERVED_EVALUATION`` rather than ``TRAINABLE``.
+Reserved and quarantined samples never become trainable again; their timestamps
+record the protection permanently, so un-ignoring restores the protected
+allocation rather than ``TRAINABLE``.
 """
 
 from enum import StrEnum
@@ -20,4 +22,5 @@ from enum import StrEnum
 class Allocation(StrEnum):
     TRAINABLE = "TRAINABLE"
     RESERVED_EVALUATION = "RESERVED_EVALUATION"
+    QUARANTINED = "QUARANTINED"
     IGNORED = "IGNORED"

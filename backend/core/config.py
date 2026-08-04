@@ -41,7 +41,7 @@ class Settings(BaseSettings):
     # eligible for training. Reserved count = min(rows * percent / 100, max).
     evaluation_percent: float = 2.0
     evaluation_max_samples: int = 5_000
-    evaluation_selector: str = "heuristic"  # see services/evaluation/selectors.py
+    evaluation_selector: str = "contamination_safe"  # see services/evaluation/selectors.py
     random_seed: int = 42
 
     cors_origins: list[str] = ["http://localhost:5173", "http://localhost:3000"]

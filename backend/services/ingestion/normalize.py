@@ -17,6 +17,7 @@ CANONICAL_COLUMNS = [
     "tgt_lang",
     "domain",
     "quality",
+    "document_id",
     "source_text",
     "target_text",
     "meta",
@@ -32,6 +33,7 @@ class ColumnMapping(BaseModel):
     tgt_lang: str | None = None
     domain: str | None = None
     quality: str | None = None
+    document_id: str | None = None
     meta_columns: list[str] = Field(default_factory=list)
 
 
@@ -76,6 +78,9 @@ def normalize(
         _column(df, mapping.tgt_lang, tgt_lang, pl.Utf8).alias("tgt_lang"),
         _column(df, mapping.domain, domain, pl.Utf8).alias("domain"),
         _column(df, mapping.quality, None, pl.Float64).alias("quality"),
+        _column(df, mapping.document_id, None, pl.Utf8)
+        .str.strip_chars()
+        .alias("document_id"),
         meta_expr.alias("meta"),
     )
 

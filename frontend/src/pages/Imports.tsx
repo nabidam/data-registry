@@ -28,6 +28,7 @@ export default function Imports() {
     target_column: 'target',
     domain_column: '',
     quality_column: '',
+    document_id_column: '',
     notes: '',
     // Evaluation reservation, applied to this import before anything is trainable.
     evaluation_percent: '',
@@ -41,6 +42,7 @@ export default function Imports() {
     queryKey: ['reservation-defaults'],
     queryFn: () => api.get<ReservationDefaults>('/imports/reservation-defaults'),
   })
+  const effectiveSelector = form.evaluation_selector || defaults.data?.evaluation_selector
 
   async function inspect(f: File) {
     setError(null)
@@ -163,6 +165,7 @@ export default function Imports() {
           {columnSelect('target_column', 'Target text column')}
           {columnSelect('domain_column', 'Domain column', true)}
           {columnSelect('quality_column', 'Quality column', true)}
+          {columnSelect('document_id_column', 'Document ID column', true)}
           <Field label={`Evaluation % (default ${defaults.data?.evaluation_percent ?? '—'})`}>
             <Input
               type="number"
@@ -193,6 +196,15 @@ export default function Imports() {
               ))}
             </Select>
           </Field>
+          {effectiveSelector === 'contamination_safe' && (
+            <p className="text-sm text-muted-foreground md:col-span-4">
+              {defaults.data?.policies.contamination_safe.description}{' '}
+              {defaults.data?.policies.contamination_safe.contamination.document_level_holdout ===
+              true
+                ? 'Document holdout is enabled.'
+                : 'Document holdout is disabled.'}
+            </p>
+          )}
           <Field label={`Seed (default ${defaults.data?.random_seed ?? '—'})`}>
             <Input
               type="number"
@@ -236,10 +248,37 @@ export default function Imports() {
           { key: 'sample_count', header: 'Samples' },
           {
             key: 'reserved',
-            header: 'Reserved',
+            header: 'Evaluation',
             render: (r) =>
               String(
                 (r.stats as { reservation?: { reserved?: number } })?.reservation?.reserved ?? '—',
+              ),
+          },
+          {
+            key: 'quarantined',
+            header: 'Quarantined',
+            render: (r) =>
+              String(
+                (r.stats as { reservation?: { quarantined?: number } })?.reservation?.quarantined ??
+                  0,
+              ),
+          },
+          {
+            key: 'splits',
+            header: 'Dev / test',
+            render: (r) => {
+              const splits = (r.stats as { reservation?: { selection?: { splits?: Record<string, number> } } })
+                ?.reservation?.selection?.splits
+              return splits ? `${splits.dev ?? 0} / ${splits.test ?? 0}` : '—'
+            },
+          },
+          {
+            key: 'gold',
+            header: 'Human verify',
+            render: (r) =>
+              String(
+                (r.stats as { reservation?: { selection?: { human_verify?: number } } })
+                  ?.reservation?.selection?.human_verify ?? '—',
               ),
           },
           { key: 'status', header: 'Status' },

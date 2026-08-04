@@ -10,6 +10,7 @@ from core.errors import BadRequest
 from db.session import get_session
 from schemas import BatchOut, ColumnMapping
 from services.evaluation.reservation import ReservationPolicy
+from services.evaluation.reservation_config import load_contamination_safe_config
 from services.evaluation.selectors import SELECTORS
 from services.ingestion.readers import SUPPORTED_FORMATS, detect_format, read_any
 from services.ingestion.service import ingest_file
@@ -34,7 +35,11 @@ async def formats():
 @router.get("/reservation-defaults")
 async def reservation_defaults():
     """Reservation settings the UI pre-fills, plus the selectors it may choose."""
-    return {**ReservationPolicy.resolve().as_dict(), "selectors": sorted(SELECTORS)}
+    return {
+        **ReservationPolicy.resolve().as_dict(),
+        "selectors": sorted(SELECTORS),
+        "policies": {"contamination_safe": load_contamination_safe_config()},
+    }
 
 
 @router.post("/inspect")
@@ -65,6 +70,7 @@ async def create_import(
     tgt_lang_column: str | None = Form(None),
     domain_column: str | None = Form(None),
     quality_column: str | None = Form(None),
+    document_id_column: str | None = Form(None),
     format: str | None = Form(None),
     notes: str | None = Form(None),
     evaluation_percent: float | None = Form(None),
@@ -87,6 +93,7 @@ async def create_import(
         tgt_lang=tgt_lang_column,
         domain=domain_column,
         quality=quality_column,
+        document_id=document_id_column,
     )
     try:
         return await ingest_file(

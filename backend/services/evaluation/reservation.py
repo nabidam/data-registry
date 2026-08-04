@@ -17,6 +17,7 @@ from core.allocation import Allocation
 from core.config import settings
 from models import Sample
 from services.evaluation.contamination import scan_snapshots
+from services.evaluation.contamination_safe import SelectionResult
 from services.evaluation.selectors import get_selector, reservation_size
 
 log = logging.getLogger(__name__)
@@ -62,20 +63,79 @@ def allocate(df: pl.DataFrame, policy: ReservationPolicy) -> tuple[pl.DataFrame,
     on the batch so a reservation is auditable after the fact.
     """
     target = reservation_size(df.height, policy.percent, policy.max_samples)
-    reserved = get_selector(policy.selector)(df, target, policy.seed)
+    selection = get_selector(policy.selector)(df, target, policy.seed)
+    if isinstance(selection, SelectionResult):
+        reserved = selection.reserved_ids
+        quarantined = selection.quarantined_ids
+        dev = selection.dev_ids
+        gold = selection.gold_ids
+        annotations = selection.annotations
+        selector_report = selection.report
+    else:
+        reserved = selection
+        quarantined = []
+        dev = []
+        gold = []
+        annotations = {}
+        selector_report = {"strategy": policy.selector}
 
     df = df.with_columns(
-        pl.when(pl.col("sample_id").is_in(pl.Series("r", reserved, dtype=pl.Int64)))
+        pl.when(pl.col("sample_id").is_in(pl.Series("reserved", reserved, dtype=pl.Int64)))
         .then(pl.lit(str(Allocation.RESERVED_EVALUATION)))
+        .when(pl.col("sample_id").is_in(pl.Series("quarantined", quarantined, dtype=pl.Int64)))
+        .then(pl.lit(str(Allocation.QUARANTINED)))
         .otherwise(pl.lit(str(Allocation.TRAINABLE)))
         .alias("allocation")
+    ).with_columns(
+        pl.when(pl.col("sample_id").is_in(pl.Series("reserved", reserved, dtype=pl.Int64)))
+        .then(
+            pl.when(pl.col("sample_id").is_in(pl.Series("dev", dev, dtype=pl.Int64)))
+            .then(pl.lit("dev"))
+            .otherwise(pl.lit("test"))
+        )
+        .otherwise(pl.lit(None, dtype=pl.Utf8))
+        .alias("evaluation_split"),
+        pl.col("sample_id")
+        .is_in(pl.Series("gold", gold, dtype=pl.Int64))
+        .alias("human_verify"),
+        pl.Series(
+            "n_tokens",
+            [annotations.get(int(sample_id), {}).get("n_tokens") for sample_id in df["sample_id"]],
+            dtype=pl.Int32,
+        ),
+        pl.Series(
+            "length_bucket",
+            [annotations.get(int(sample_id), {}).get("length_bucket") for sample_id in df["sample_id"]],
+            dtype=pl.Utf8,
+        ),
+        *[
+            pl.Series(
+                column,
+                [annotations.get(int(sample_id), {}).get(column, False) for sample_id in df["sample_id"]],
+                dtype=pl.Boolean,
+            )
+            for column in (
+                "has_math",
+                "has_numbers_units",
+                "has_acronyms",
+                "has_mixed_script",
+                "is_rare_term",
+            )
+        ],
+        pl.Series(
+            "rare_term_score",
+            [annotations.get(int(sample_id), {}).get("rare_term_score") for sample_id in df["sample_id"]],
+            dtype=pl.Float64,
+        ),
     )
     report = {
         **policy.as_dict(),
         "imported": df.height,
         "target": target,
         "reserved": len(reserved),
-        "trainable": df.height - len(reserved),
+        "quarantined": len(quarantined),
+        "trainable": df.height - len(reserved) - len(quarantined),
+        "selection": selector_report,
     }
     log.info(
         "reserved %s/%s samples for evaluation via %r selector",
@@ -88,6 +148,8 @@ def allocate(df: pl.DataFrame, policy: ReservationPolicy) -> tuple[pl.DataFrame,
 
 def restore_allocation(sample: Sample) -> str:
     """Allocation a sample returns to when un-ignored: reservation is permanent."""
+    if sample.quarantined_at:
+        return Allocation.QUARANTINED
     return Allocation.RESERVED_EVALUATION if sample.reserved_at else Allocation.TRAINABLE
 
 
@@ -112,13 +174,18 @@ async def set_allocation(
     newly_reserved: list[int] = []
 
     for sample in samples:
-        if allocation == Allocation.TRAINABLE and sample.reserved_at:
-            # A reserved sample never becomes trainable again.
-            sample.allocation = Allocation.RESERVED_EVALUATION
+        if allocation == Allocation.TRAINABLE and (sample.reserved_at or sample.quarantined_at):
+            # Reservation and contamination quarantine are both permanent.
+            sample.allocation = restore_allocation(sample)
+            continue
+        if allocation == Allocation.RESERVED_EVALUATION and sample.quarantined_at:
+            sample.allocation = Allocation.QUARANTINED
             continue
         if allocation == Allocation.RESERVED_EVALUATION and sample.reserved_at is None:
             sample.reserved_at = now
             newly_reserved.append(sample.id)
+        if allocation == Allocation.QUARANTINED and sample.quarantined_at is None:
+            sample.quarantined_at = now
         sample.allocation = allocation
 
     await session.commit()

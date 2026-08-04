@@ -34,6 +34,7 @@ export default function Dashboard() {
         <Stat label="Experiments" value={o?.experiments ?? '—'} />
         <Stat label="Trainable" value={o?.trainable_samples ?? '—'} />
         <Stat label="Reserved (eval)" value={o?.reserved_samples ?? '—'} />
+        <Stat label="Quarantined" value={o?.quarantined_samples ?? '—'} />
         <Stat label="Ignored" value={o?.ignored_samples ?? '—'} />
         <Stat label="Contaminated snapshots" value={o?.contaminated_snapshots ?? '—'} />
       </div>

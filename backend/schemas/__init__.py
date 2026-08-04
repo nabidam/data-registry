@@ -63,6 +63,7 @@ class SampleOut(ORMModel):
     quality: float | None
     allocation: str
     reserved_at: datetime | None
+    quarantined_at: datetime | None
     created_at: datetime
 
 

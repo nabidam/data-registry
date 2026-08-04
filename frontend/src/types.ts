@@ -20,7 +20,7 @@ export type Batch = {
 }
 
 /** Exactly one allocation per sample; reserved samples never become trainable again. */
-export type Allocation = 'TRAINABLE' | 'RESERVED_EVALUATION' | 'IGNORED'
+export type Allocation = 'TRAINABLE' | 'RESERVED_EVALUATION' | 'QUARANTINED' | 'IGNORED'
 
 export type Sample = {
   id: number
@@ -32,6 +32,7 @@ export type Sample = {
   quality: number | null
   allocation: Allocation
   reserved_at: string | null
+  quarantined_at: string | null
   created_at: string
   source_text?: string
   target_text?: string
@@ -52,6 +53,21 @@ export type ReservationDefaults = {
   evaluation_selector: string
   random_seed: number
   selectors: string[]
+  policies: {
+    contamination_safe: ContaminationSafeReservationConfig
+  }
+}
+
+export type ContaminationSafeReservationConfig = {
+  description: string
+  selection: Record<string, unknown>
+  features: Record<string, unknown>
+  diversity: Record<string, unknown>
+  contamination: Record<string, unknown> & {
+    document_level_holdout: boolean
+    near_dup_check_enabled: boolean
+    near_dup_cosine_threshold: number
+  }
 }
 
 export type Row = Record<string, unknown>
@@ -154,6 +170,7 @@ export type Overview = {
   models: number
   trainable_samples: number
   reserved_samples: number
+  quarantined_samples: number
   ignored_samples: number
   contaminated_snapshots: number
 }

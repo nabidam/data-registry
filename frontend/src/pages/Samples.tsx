@@ -96,6 +96,7 @@ export default function Samples() {
               <option value="">any</option>
               <option value="TRAINABLE">trainable</option>
               <option value="RESERVED_EVALUATION">reserved (evaluation)</option>
+              <option value="QUARANTINED">quarantined (contamination)</option>
               <option value="IGNORED">ignored</option>
             </Select>
           </Field>
@@ -209,6 +210,10 @@ export default function Samples() {
               <div>
                 <dt className="text-slate-500">Reserved at</dt>
                 <dd>{detail.data?.reserved_at ?? '—'}</dd>
+              </div>
+              <div>
+                <dt className="text-slate-500">Quarantined at</dt>
+                <dd>{detail.data?.quarantined_at ?? '—'}</dd>
               </div>
             </dl>
           )}

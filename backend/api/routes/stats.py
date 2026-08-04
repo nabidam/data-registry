@@ -55,6 +55,7 @@ async def overview(session: AsyncSession = Depends(get_session)):
         "models": await count(Model),
         "trainable_samples": await allocated(Allocation.TRAINABLE),
         "reserved_samples": await allocated(Allocation.RESERVED_EVALUATION),
+        "quarantined_samples": await allocated(Allocation.QUARANTINED),
         "ignored_samples": await allocated(Allocation.IGNORED),
         "contaminated_snapshots": await count(SnapshotContamination),
     }

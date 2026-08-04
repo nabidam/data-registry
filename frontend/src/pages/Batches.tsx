@@ -28,6 +28,32 @@ export default function Batches() {
           { key: 'name', header: 'Name' },
           { key: 'format', header: 'Format' },
           { key: 'sample_count', header: 'Samples' },
+          {
+            key: 'evaluation',
+            header: 'Evaluation',
+            render: (r) =>
+              String(
+                (r.stats as { reservation?: { reserved?: number } })?.reservation?.reserved ?? '—',
+              ),
+          },
+          {
+            key: 'quarantined',
+            header: 'Quarantined',
+            render: (r) =>
+              String(
+                (r.stats as { reservation?: { quarantined?: number } })?.reservation?.quarantined ??
+                  0,
+              ),
+          },
+          {
+            key: 'splits',
+            header: 'Dev / test',
+            render: (r) => {
+              const splits = (r.stats as { reservation?: { selection?: { splits?: Record<string, number> } } })
+                ?.reservation?.selection?.splits
+              return splits ? `${splits.dev ?? 0} / ${splits.test ?? 0}` : '—'
+            },
+          },
           { key: 'status', header: 'Status', render: (r) => <Badge>{String(r.status)}</Badge> },
           { key: 'parquet_uri', header: 'Parquet' },
           {
@@ -57,6 +83,12 @@ export default function Batches() {
               { key: 'target_text', header: 'Target' },
               { key: 'domain', header: 'Domain' },
               { key: 'quality', header: 'Quality' },
+              { key: 'evaluation_split', header: 'Eval split' },
+              {
+                key: 'human_verify',
+                header: 'Human verify',
+                render: (r) => (r.human_verify === true ? 'yes' : '—'),
+              },
             ]}
           />
         </Card>
