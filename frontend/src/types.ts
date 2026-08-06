@@ -19,6 +19,27 @@ export type Batch = {
   created_at: string
 }
 
+export type ImportProgress = {
+  phase?: string
+  message?: string
+  rows_processed?: number
+  shards_processed?: number
+  shards_total?: number
+  stage?: string
+  items_processed?: number
+  items_total?: number
+  stage_elapsed_seconds?: number
+  updated_at?: string
+}
+
+export type ImportStats = Record<string, unknown> & {
+  attempt?: number
+  heartbeat_at?: string
+  finished_at?: string
+  error?: string
+  progress?: ImportProgress
+}
+
 /** Exactly one allocation per sample; reserved samples never become trainable again. */
 export type Allocation = 'TRAINABLE' | 'RESERVED_EVALUATION' | 'QUARANTINED' | 'IGNORED'
 

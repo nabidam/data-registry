@@ -13,8 +13,10 @@ import json
 import math
 import random
 import re
+import time
 import unicodedata
 from collections import Counter, defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -22,6 +24,8 @@ from typing import Any
 import polars as pl
 
 from core.config import settings
+
+SelectionProgress = Callable[[str, str, int | None, int | None, float | None], None]
 
 TOKEN_RE = re.compile(r"\w+", re.UNICODE)
 MATH_RE = re.compile(
@@ -49,6 +53,41 @@ class SelectionResult:
     gold_ids: list[int]
     annotations: dict[int, dict[str, Any]]
     report: dict[str, Any]
+
+
+@dataclass
+class ContaminationReference:
+    """Selected evaluation rows prepared for a bounded full-corpus scan."""
+
+    selected_ids: set[int]
+    source_keys: set[str]
+    document_ids: set[str]
+    embeddings: Any
+    near_duplicate_shingles: set[str]
+    encoder: Any = None
+
+
+@dataclass(frozen=True)
+class ContaminationScanResult:
+    quarantined_ids: set[int]
+    exact_or_document_rows: int
+    semantic_prefilter_rows: int
+    semantic_checked_rows: int
+
+
+_MODEL_CACHE: dict[tuple[str, str], Any] = {}
+
+
+def _emit(
+    progress: SelectionProgress | None,
+    stage: str,
+    message: str,
+    completed: int | None = None,
+    total: int | None = None,
+    elapsed: float | None = None,
+) -> None:
+    if progress:
+        progress(stage, message, completed, total, elapsed)
 
 
 @dataclass(frozen=True)
@@ -166,14 +205,18 @@ def _dedup_exact(rows: list[_Row], indexes: list[int]) -> tuple[list[int], set[i
 
 
 def _dedup_minhash(
-    rows: list[_Row], indexes: list[int], threshold: float
+    rows: list[_Row],
+    indexes: list[int],
+    threshold: float,
+    progress: SelectionProgress | None = None,
 ) -> tuple[list[int], set[int]]:
     from datasketch import MinHash, MinHashLSH
 
     lsh = MinHashLSH(threshold=threshold, num_perm=128)
     kept: list[int] = []
     dropped: set[int] = set()
-    for index in indexes:
+    started = time.perf_counter()
+    for position, index in enumerate(indexes, start=1):
         signature = MinHash(num_perm=128)
         for shingle in _shingles(rows[index].source):
             signature.update(shingle.encode("utf-8"))
@@ -182,6 +225,15 @@ def _dedup_minhash(
         else:
             lsh.insert(str(index), signature)
             kept.append(index)
+        if position % 1_000 == 0 or position == len(indexes):
+            _emit(
+                progress,
+                "minhash_dedup",
+                f"MinHash checked {position:,}/{len(indexes):,} candidates",
+                position,
+                len(indexes),
+                time.perf_counter() - started,
+            )
     return kept, dropped
 
 
@@ -219,7 +271,81 @@ def _tfidf_embeddings(texts: list[str]) -> np.ndarray:
     )
 
 
-def _compute_embeddings(rows: list[_Row], config: dict[str, Any]) -> np.ndarray:
+def _embedding_model(config: dict[str, Any]):
+    """Load one LaBSE instance per worker process and reuse it across shards."""
+    from sentence_transformers import SentenceTransformer
+
+    embedding_config = config["embeddings"]
+    device = str(embedding_config["device"])
+    if device == "auto":
+        import torch
+
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    key = (str(embedding_config["model"]), device)
+    model = _MODEL_CACHE.get(key)
+    if model is None:
+        model = SentenceTransformer(key[0], device=device)
+        _MODEL_CACHE[key] = model
+    return model
+
+
+def _encode_labse(
+    texts: list[str],
+    config: dict[str, Any],
+    progress: SelectionProgress | None = None,
+    *,
+    stage: str = "labse_embeddings",
+):
+    import numpy as np
+
+    started = time.perf_counter()
+    model_name = str(config["embeddings"]["model"])
+    _emit(progress, stage, f"Loading LaBSE model {model_name}", 0, len(texts), 0.0)
+    model = _embedding_model(config)
+    batch_size = int(config["embeddings"]["batch_size"])
+    chunk_size = max(256, batch_size * 8)
+    device = str(getattr(model, "device", config["embeddings"]["device"]))
+    _emit(
+        progress,
+        stage,
+        (
+            f"LaBSE ready on {device}; encoding {len(texts):,} rows "
+            f"in chunks of {chunk_size:,}"
+        ),
+        0,
+        len(texts),
+        time.perf_counter() - started,
+    )
+    chunks = []
+    for start in range(0, len(texts), chunk_size):
+        stop = min(start + chunk_size, len(texts))
+        chunks.append(
+            np.asarray(
+                model.encode(
+                    texts[start:stop],
+                    batch_size=batch_size,
+                    show_progress_bar=False,
+                    normalize_embeddings=True,
+                ),
+                dtype=np.float32,
+            )
+        )
+        _emit(
+            progress,
+            stage,
+            f"LaBSE encoded {stop:,}/{len(texts):,} rows",
+            stop,
+            len(texts),
+            time.perf_counter() - started,
+        )
+    return np.vstack(chunks) if chunks else np.empty((0, 0), dtype=np.float32)
+
+
+def _compute_embeddings(
+    rows: list[_Row],
+    config: dict[str, Any],
+    progress: SelectionProgress | None = None,
+) -> np.ndarray:
     import numpy as np
 
     texts = [row.source for row in rows]
@@ -229,31 +355,32 @@ def _compute_embeddings(rows: list[_Row], config: dict[str, Any]) -> np.ndarray:
         if cache.exists() and metadata.exists():
             try:
                 if json.loads(metadata.read_text())["data_hash"] == digest:
-                    return np.load(cache)
+                    embeddings = np.load(cache)
+                    _emit(
+                        progress,
+                        "labse_embeddings",
+                        f"Loaded {len(texts):,} cached embeddings",
+                        len(texts),
+                        len(texts),
+                        0.0,
+                    )
+                    return embeddings
             except (OSError, ValueError, KeyError, json.JSONDecodeError):
                 pass
 
     embedding_config = config["embeddings"]
     if embedding_config["enabled"]:
-        from sentence_transformers import SentenceTransformer
-
-        device = embedding_config["device"]
-        if device == "auto":
-            import torch
-
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-        model = SentenceTransformer(embedding_config["model"], device=device)
-        embeddings = np.asarray(
-            model.encode(
-                texts,
-                batch_size=int(embedding_config["batch_size"]),
-                show_progress_bar=False,
-                normalize_embeddings=True,
-            ),
-            dtype=np.float32,
-        )
+        embeddings = _encode_labse(texts, config, progress)
     else:
+        _emit(progress, "tfidf_embeddings", f"Computing TF-IDF for {len(texts):,} rows")
         embeddings = _tfidf_embeddings(texts)
+        _emit(
+            progress,
+            "tfidf_embeddings",
+            f"Computed TF-IDF for {len(texts):,} rows",
+            len(texts),
+            len(texts),
+        )
 
     if cache:
         cache.parent.mkdir(parents=True, exist_ok=True)
@@ -262,23 +389,215 @@ def _compute_embeddings(rows: list[_Row], config: dict[str, Any]) -> np.ndarray:
     return embeddings
 
 
+def prepare_contamination_reference(
+    selected_rows: pl.DataFrame,
+    config: dict[str, Any],
+    progress: SelectionProgress | None = None,
+) -> ContaminationReference:
+    """Prepare reserved rows for streaming checks against the complete corpus."""
+    records = selected_rows.select("sample_id", "source_text", "document_id").to_dicts()
+    separator = str(config.get("input", {}).get("id_separator", ":"))
+    selected_ids = {int(record["sample_id"]) for record in records}
+    source_keys = {" ".join(_tokens(str(record["source_text"]))) for record in records}
+    document_ids = (
+        {_document_id(record, separator) for record in records}
+        if config["contamination"]["document_level_holdout"]
+        else set()
+    )
+    texts = [str(record["source_text"]) for record in records]
+    prefilter_size = int(config["contamination"].get("semantic_prefilter_shingle_size", 5))
+    near_duplicate_shingles = {
+        shingle for text in texts for shingle in _shingles(text, prefilter_size)
+    }
+
+    if config["embeddings"]["enabled"]:
+        embeddings = _encode_labse(
+            texts,
+            config,
+            progress,
+            stage="reference_embeddings",
+        )
+        encoder = None
+    else:
+        from sklearn.feature_extraction.text import TfidfVectorizer
+
+        encoder = TfidfVectorizer(analyzer="char_wb", ngram_range=(2, 4), max_features=50_000)
+        embeddings = encoder.fit_transform(texts)
+
+    return ContaminationReference(
+        selected_ids=selected_ids,
+        source_keys=source_keys,
+        document_ids=document_ids,
+        embeddings=embeddings,
+        near_duplicate_shingles=near_duplicate_shingles,
+        encoder=encoder,
+    )
+
+
+def scan_full_corpus_contamination(
+    rows: pl.DataFrame,
+    reference: ContaminationReference,
+    config: dict[str, Any],
+    progress: SelectionProgress | None = None,
+) -> ContaminationScanResult:
+    """Find train/evaluation leakage in one bounded frame.
+
+    Every source row is checked for selected-document membership and exact
+    source duplication. Rows sharing a lexical shingle with reserved text are
+    then verified by embedding similarity. Memory stays proportional to one
+    ingestion frame and the selected set.
+    """
+    import numpy as np
+
+    records = rows.select("sample_id", "source_text", "document_id").to_dicts()
+    separator = str(config.get("input", {}).get("id_separator", ":"))
+    contamination = config["contamination"]
+    contaminated: set[int] = set()
+    candidates: list[dict[str, Any]] = []
+    prefilter_size = int(contamination.get("semantic_prefilter_shingle_size", 5))
+    started = time.perf_counter()
+    for position, record in enumerate(records, start=1):
+        sample_id = int(record["sample_id"])
+        if sample_id in reference.selected_ids:
+            continue
+        source_key = " ".join(_tokens(str(record["source_text"])))
+        if (
+            source_key in reference.source_keys
+            or _document_id(record, separator) in reference.document_ids
+        ):
+            contaminated.add(sample_id)
+        elif (
+            _shingles(str(record["source_text"]), prefilter_size)
+            & reference.near_duplicate_shingles
+        ):
+            candidates.append(record)
+        if position % 5_000 == 0 or position == len(records):
+            _emit(
+                progress,
+                "full_corpus_prefilter",
+                (
+                    f"Prefiltered {position:,}/{len(records):,} shard rows; "
+                    f"{len(candidates):,} require semantic verification"
+                ),
+                position,
+                len(records),
+                time.perf_counter() - started,
+            )
+
+    if not contamination["near_dup_check_enabled"] or not candidates:
+        return ContaminationScanResult(
+            contaminated,
+            exact_or_document_rows=len(contaminated),
+            semantic_prefilter_rows=len(candidates),
+            semantic_checked_rows=0,
+        )
+
+    texts = [str(record["source_text"]) for record in candidates]
+    exact_or_document_rows = len(contaminated)
+    if config["embeddings"]["enabled"]:
+        vectors = _encode_labse(
+            texts,
+            config,
+            progress,
+            stage="full_corpus_embeddings",
+        )
+        selected = reference.embeddings
+        for start in range(0, len(candidates), 512):
+            similarities = vectors[start : start + 512] @ selected.T
+            maximum = similarities.max(axis=1)
+            contaminated.update(
+                int(record["sample_id"])
+                for record, similarity in zip(
+                    candidates[start : start + 512], maximum, strict=True
+                )
+                if similarity >= float(contamination["near_dup_cosine_threshold"])
+            )
+    else:
+        vectors = reference.encoder.transform(texts)
+        for start in range(0, len(candidates), 512):
+            similarities = (vectors[start : start + 512] @ reference.embeddings.T).toarray()
+            maximum = np.asarray(similarities.max(axis=1)).ravel()
+            contaminated.update(
+                int(record["sample_id"])
+                for record, similarity in zip(
+                    candidates[start : start + 512], maximum, strict=True
+                )
+                if similarity >= float(contamination["near_dup_cosine_threshold"])
+            )
+    return ContaminationScanResult(
+        contaminated,
+        exact_or_document_rows=exact_or_document_rows,
+        semantic_prefilter_rows=len(candidates),
+        semantic_checked_rows=len(candidates),
+    )
+
+
 def _dedup_embeddings(
-    indexes: list[int], embeddings: np.ndarray, threshold: float
+    indexes: list[int],
+    embeddings: np.ndarray,
+    threshold: float,
+    seed: int,
+    progress: SelectionProgress | None = None,
 ) -> tuple[list[int], np.ndarray, set[int]]:
-    from sklearn.neighbors import NearestNeighbors
+    """Deduplicate high-similarity embeddings with deterministic LSH buckets.
+
+    The previous exact nearest-neighbor call compared every candidate with the
+    complete candidate matrix. At 50,000 rows that is 2.5 billion cosine pairs.
+    Random-hyperplane bands retain high recall around the configured 0.95
+    threshold while keeping the candidate comparisons bounded.
+    """
+    import numpy as np
 
     if len(indexes) < 2:
         return indexes, embeddings, set()
-    neighbors = NearestNeighbors(n_neighbors=min(6, len(indexes)), metric="cosine").fit(embeddings)
-    distances, nearest = neighbors.kneighbors(embeddings)
+
+    started = time.perf_counter()
+    band_count = 12
+    bits_per_band = 12
+    rng = np.random.default_rng(seed)
+    projections = rng.standard_normal(
+        (embeddings.shape[1], band_count * bits_per_band), dtype=np.float32
+    )
+    signatures = embeddings @ projections >= 0
+    powers = (1 << np.arange(bits_per_band, dtype=np.uint16)).reshape(1, -1)
+    buckets: list[dict[int, list[int]]] = [defaultdict(list) for _ in range(band_count)]
     dropped_positions: set[int] = set()
+
     for position in range(len(indexes)):
-        if position in dropped_positions:
-            continue
-        for neighbor, distance in zip(nearest[position][1:], distances[position][1:], strict=True):
-            if 1.0 - distance >= threshold and neighbor not in dropped_positions and neighbor > position:
-                dropped_positions.add(int(neighbor))
-    kept_positions = [position for position in range(len(indexes)) if position not in dropped_positions]
+        candidates: set[int] = set()
+        codes: list[int] = []
+        for band in range(band_count):
+            start = band * bits_per_band
+            code = int((signatures[position, start : start + bits_per_band] * powers).sum())
+            codes.append(code)
+            candidates.update(buckets[band].get(code, ()))
+
+        if candidates:
+            candidate_positions = np.fromiter(candidates, dtype=np.int64)
+            similarities = embeddings[candidate_positions] @ embeddings[position]
+            if bool(np.any(similarities >= threshold)):
+                dropped_positions.add(position)
+        if position not in dropped_positions:
+            for band, code in enumerate(codes):
+                buckets[band][code].append(position)
+
+        completed = position + 1
+        if completed % 1_000 == 0 or completed == len(indexes):
+            _emit(
+                progress,
+                "embedding_dedup",
+                (
+                    f"Embedding dedup checked {completed:,}/{len(indexes):,} candidates; "
+                    f"removed {len(dropped_positions):,}"
+                ),
+                completed,
+                len(indexes),
+                time.perf_counter() - started,
+            )
+
+    kept_positions = [
+        position for position in range(len(indexes)) if position not in dropped_positions
+    ]
     return (
         [indexes[position] for position in kept_positions],
         embeddings[kept_positions],
@@ -291,6 +610,11 @@ def _candidate_documents(
 ) -> list[int]:
     maximum = config["selection"].get("max_test_documents")
     if not maximum:
+        return indexes
+    # Missing document IDs are represented as one synthetic document per row.
+    # A document cap must not turn a requested 1,000-row evaluation set into
+    # only 30 rows when the import did not provide document metadata.
+    if all(rows[index].document_id.startswith("sample:") for index in indexes):
         return indexes
     by_document: dict[str, list[int]] = defaultdict(list)
     for index in indexes:
@@ -319,7 +643,9 @@ def _candidate_documents(
         def score(document_id: str) -> tuple[float, float]:
             document_rows = [rows[index] for index in by_document[document_id]]
             coverage = len({row.length_bucket for row in document_rows})
-            hard_density = sum(sum(row.flags.values()) for row in document_rows) / len(document_rows)
+            hard_density = (
+                sum(sum(row.flags.values()) for row in document_rows) / len(document_rows)
+            )
             return coverage * 2 + hard_density, rng.random() * 1e-6
 
         selected_documents.update(
@@ -393,19 +719,46 @@ def _quotas(rows: list[_Row], total: int, config: dict[str, Any]) -> dict[tuple[
     return quota
 
 
-def _kcenter(indexes: list[int], vectors: dict[int, np.ndarray], count: int, rng: random.Random) -> list[int]:
+def _kcenter(
+    indexes: list[int],
+    vectors: dict[int, np.ndarray],
+    count: int,
+    rng: random.Random,
+    dimensions: int,
+    progress: SelectionProgress | None = None,
+    label: str = "cell",
+) -> list[int]:
     import numpy as np
 
     if count >= len(indexes):
         return indexes
+    started = time.perf_counter()
     embeddings = np.vstack([vectors[index] for index in indexes])
+    if dimensions > 0 and embeddings.shape[1] > dimensions:
+        projection_rng = np.random.default_rng(rng.randrange(2**32))
+        projection = projection_rng.standard_normal(
+            (embeddings.shape[1], dimensions), dtype=np.float32
+        )
+        embeddings = embeddings @ projection
+        embeddings = _normalize_embeddings(embeddings)
     start = rng.randrange(len(indexes))
     selected_positions = [start]
     minimum_distance = 1.0 - embeddings @ embeddings[start]
-    for _ in range(count - 1):
+    report_every = max(1, count // 20)
+    for iteration in range(count - 1):
         position = int(np.argmax(minimum_distance))
         selected_positions.append(position)
         minimum_distance = np.minimum(minimum_distance, 1.0 - embeddings @ embeddings[position])
+        completed = iteration + 2
+        if completed % report_every == 0 or completed == count:
+            _emit(
+                progress,
+                "kcenter_diversity",
+                f"k-center {label}: selected {completed:,}/{count:,}",
+                completed,
+                count,
+                time.perf_counter() - started,
+            )
     return [indexes[position] for position in selected_positions]
 
 
@@ -416,6 +769,7 @@ def _select(
     total: int,
     config: dict[str, Any],
     rng: random.Random,
+    progress: SelectionProgress | None = None,
 ) -> tuple[list[int], dict[tuple[str, str], int]]:
     quotas = _quotas([rows[index] for index in candidates], total, config)
     selected: list[int] = []
@@ -428,7 +782,17 @@ def _select(
         if config["diversity"]["strategy"] == "random":
             selected.extend(rng.sample(cell, min(quota, len(cell))))
         else:
-            selected.extend(_kcenter(cell, vectors, min(quota, len(cell)), rng))
+            selected.extend(
+                _kcenter(
+                    cell,
+                    vectors,
+                    min(quota, len(cell)),
+                    rng,
+                    int(config["diversity"].get("projection_dimensions", 128)),
+                    progress,
+                    label=f"{domain}/{bucket}",
+                )
+            )
     return selected, quotas
 
 
@@ -439,37 +803,66 @@ def _top_up_hard_phenomena(
     selected: list[int],
     total: int,
     config: dict[str, Any],
+    progress: SelectionProgress | None = None,
 ) -> list[int]:
+    import numpy as np
+
     shares = dict(config["selection"]["hard_phenomena_min_share"])
     shares["is_rare_term"] = config["selection"]["rare_term_min_share"]
     chosen = set(selected)
+    started = time.perf_counter()
     for flag, share in shares.items():
         required = math.ceil(float(share) * total)
-        while sum(rows[index].flags[flag] for index in chosen) < required:
-            options = [index for index in candidates if index not in chosen and rows[index].flags[flag]]
-            if not options:
-                break
-            incoming = min(
-                options,
-                key=lambda index: max(
-                    (float(vectors[index] @ vectors[item]) for item in chosen), default=0.0
-                ),
-            )
-            removable = sorted(
-                chosen,
-                key=lambda index: (
-                    any(rows[index].flags.values()),
-                    -max(
-                        (float(vectors[index] @ vectors[item]) for item in chosen if item != index),
-                        default=0.0,
-                    ),
-                    index,
-                ),
-            )
-            if not removable:
-                break
-            chosen.remove(removable[0])
-            chosen.add(incoming)
+        current = sum(rows[index].flags[flag] for index in chosen)
+        deficit = max(0, required - current)
+        options = [
+            index
+            for index in candidates
+            if index not in chosen and rows[index].flags[flag]
+        ]
+        replacement_count = min(deficit, len(options), len(chosen))
+        if replacement_count:
+            chosen_list = sorted(chosen)
+            chosen_vectors = np.vstack([vectors[index] for index in chosen_list])
+            option_scores: list[float] = []
+            for start in range(0, len(options), 1_024):
+                block = options[start : start + 1_024]
+                block_vectors = np.vstack([vectors[index] for index in block])
+                option_scores.extend((block_vectors @ chosen_vectors.T).max(axis=1).tolist())
+            incoming = [
+                index
+                for _, index in sorted(zip(option_scores, options, strict=True))[
+                    :replacement_count
+                ]
+            ]
+
+            similarities = chosen_vectors @ chosen_vectors.T
+            np.fill_diagonal(similarities, -np.inf)
+            redundancy = similarities.max(axis=1)
+            removable = [
+                index
+                for _, _, index in sorted(
+                    (
+                        any(rows[index].flags.values()),
+                        -float(redundancy[position]),
+                        index,
+                    )
+                    for position, index in enumerate(chosen_list)
+                )[:replacement_count]
+            ]
+            chosen.difference_update(removable)
+            chosen.update(incoming)
+        _emit(
+            progress,
+            "hard_phenomena_topup",
+            (
+                f"Top-up {flag}: required {required:,}, had {current:,}, "
+                f"replaced {replacement_count:,}"
+            ),
+            min(required, current + replacement_count),
+            required,
+            time.perf_counter() - started,
+        )
     return sorted(chosen)
 
 
@@ -489,7 +882,12 @@ def _split_dev_test(
     return dev
 
 
-def _gold_subset(rows: list[_Row], selected: list[int], config: dict[str, Any], rng: random.Random) -> set[int]:
+def _gold_subset(
+    rows: list[_Row],
+    selected: list[int],
+    config: dict[str, Any],
+    rng: random.Random,
+) -> set[int]:
     if not config["gold_subset"]["enabled"] or not selected:
         return set()
     by_domain: dict[str, list[int]] = defaultdict(list)
@@ -507,47 +905,127 @@ def _selection_hash(rows: list[_Row], indexes: set[int]) -> str:
     return hashlib.sha256(ids.encode("utf-8")).hexdigest()
 
 
-def select(rows: pl.DataFrame, target: int, seed: int, config: dict[str, Any]) -> SelectionResult:
+def select(
+    rows: pl.DataFrame,
+    target: int,
+    seed: int,
+    config: dict[str, Any],
+    progress: SelectionProgress | None = None,
+) -> SelectionResult:
     """Run every source-pipeline stage and translate its outputs to registry state."""
+    selection_started = time.perf_counter()
     records = rows.select(
         "sample_id", "source_text", "target_text", "domain", "document_id"
     ).to_dicts()
     if target <= 0 or not records:
-        return SelectionResult([], [], [], [], {}, {"strategy": "contamination_safe", "selected": 0})
+        return SelectionResult(
+            [], [], [], [], {}, {"strategy": "contamination_safe", "selected": 0}
+        )
     _require_evaluation_group()
     import numpy as np
 
+    stage_started = time.perf_counter()
+    _emit(progress, "annotating", f"Annotating {len(records):,} candidate rows", 0, len(records))
     annotated = _annotate(records, config)
+    _emit(
+        progress,
+        "annotating",
+        f"Annotated {len(records):,} candidate rows",
+        len(records),
+        len(records),
+        time.perf_counter() - stage_started,
+    )
     active = list(range(len(annotated)))
     quarantined: set[int] = set()
     dedup_report: dict[str, int] = {"exact": 0, "minhash": 0, "embedding": 0}
     dedup = config["dedup"]
     if dedup["enabled"]:
+        stage_started = time.perf_counter()
+        _emit(progress, "exact_dedup", f"Exact-deduplicating {len(active):,} candidates")
         active, removed = _dedup_exact(annotated, active)
         quarantined.update(removed)
         dedup_report["exact"] = len(removed)
+        _emit(
+            progress,
+            "exact_dedup",
+            f"Exact dedup kept {len(active):,}; removed {len(removed):,}",
+            len(active),
+            len(records),
+            time.perf_counter() - stage_started,
+        )
         if dedup["minhash_enabled"]:
-            active, removed = _dedup_minhash(annotated, active, float(dedup["minhash_threshold"]))
+            active, removed = _dedup_minhash(
+                annotated,
+                active,
+                float(dedup["minhash_threshold"]),
+                progress,
+            )
             quarantined.update(removed)
             dedup_report["minhash"] = len(removed)
 
-    embeddings = _compute_embeddings([annotated[index] for index in active], config)
+    embeddings = _compute_embeddings(
+        [annotated[index] for index in active],
+        config,
+        progress,
+    )
     if dedup["enabled"] and dedup["embedding_dedup_enabled"]:
         active, embeddings, removed = _dedup_embeddings(
-            active, embeddings, float(dedup["embedding_cosine_threshold"])
+            active,
+            embeddings,
+            float(dedup["embedding_cosine_threshold"]),
+            seed,
+            progress,
         )
         quarantined.update(removed)
         dedup_report["embedding"] = len(removed)
     vectors = {index: embeddings[position] for position, index in enumerate(active)}
 
     rng = random.Random(seed)
+    stage_started = time.perf_counter()
+    _emit(progress, "candidate_documents", "Applying candidate-document limits")
     candidates = _candidate_documents(annotated, active, config, rng)
+    _emit(
+        progress,
+        "candidate_documents",
+        f"Document filtering kept {len(candidates):,}/{len(active):,} candidates",
+        len(candidates),
+        len(active),
+        time.perf_counter() - stage_started,
+    )
     selection_target = min(target, len(candidates))
+    stage_started = time.perf_counter()
+    _emit(
+        progress,
+        "diversity_selection",
+        f"Selecting {selection_target:,} diverse evaluation rows",
+        0,
+        selection_target,
+    )
     selected, quotas = _select(
-        annotated, vectors, candidates, selection_target, config, rng
+        annotated,
+        vectors,
+        candidates,
+        selection_target,
+        config,
+        rng,
+        progress,
     )
     selected = _top_up_hard_phenomena(
-        annotated, vectors, candidates, selected, selection_target, config
+        annotated,
+        vectors,
+        candidates,
+        selected,
+        selection_target,
+        config,
+        progress,
+    )
+    _emit(
+        progress,
+        "diversity_selection",
+        f"Selected {len(selected):,} evaluation rows",
+        len(selected),
+        selection_target,
+        time.perf_counter() - stage_started,
     )
     selected_set = set(selected)
 
@@ -561,6 +1039,7 @@ def select(rows: pl.DataFrame, target: int, seed: int, config: dict[str, Any]) -
             if index not in selected_set and row.document_id in held_documents
         )
     if contamination["near_dup_check_enabled"] and selected_set:
+        stage_started = time.perf_counter()
         threshold = float(contamination["near_dup_cosine_threshold"])
         pool = [index for index in active if index not in selected_set and index not in quarantined]
         selected_embeddings = np.vstack([vectors[index] for index in selected_set])
@@ -568,7 +1047,20 @@ def select(rows: pl.DataFrame, target: int, seed: int, config: dict[str, Any]) -
             block = pool[start : start + 2048]
             similarities = np.vstack([vectors[index] for index in block]) @ selected_embeddings.T
             quarantined.update(
-                index for index, similarity in zip(block, similarities.max(axis=1), strict=True) if similarity >= threshold
+                index
+                for index, similarity in zip(
+                    block, similarities.max(axis=1), strict=True
+                )
+                if similarity >= threshold
+            )
+            completed = min(start + 2048, len(pool))
+            _emit(
+                progress,
+                "candidate_contamination_scan",
+                f"Checked {completed:,}/{len(pool):,} candidates against the selected set",
+                completed,
+                len(pool),
+                time.perf_counter() - stage_started,
             )
 
     dev = _split_dev_test(annotated, selected, config, rng)
@@ -594,6 +1086,7 @@ def select(rows: pl.DataFrame, target: int, seed: int, config: dict[str, Any]) -
         "candidate_rows": len(candidates),
         "held_documents": len(held_documents),
         "dedup_removed": dedup_report,
+        "embedding_dedup_method": "random_hyperplane_lsh",
         "embeddings": {
             "backend": "labse" if config["embeddings"]["enabled"] else "tfidf_svd",
             "model": config["embeddings"]["model"] if config["embeddings"]["enabled"] else None,
@@ -605,7 +1098,19 @@ def select(rows: pl.DataFrame, target: int, seed: int, config: dict[str, Any]) -
         "splits": {"dev": len(dev), "test": len(selected_set - dev)},
         "human_verify": len(gold),
         "manifest": {"selected_ids_sha256": _selection_hash(annotated, selected_set)},
+        "elapsed_seconds": round(time.perf_counter() - selection_started, 3),
     }
+    _emit(
+        progress,
+        "selection_complete",
+        (
+            f"Selection completed in {time.perf_counter() - selection_started:.1f}s; "
+            f"reserved {len(selected_set):,}, quarantined {len(quarantined):,}"
+        ),
+        len(selected_set),
+        selection_target,
+        time.perf_counter() - selection_started,
+    )
     return SelectionResult(
         reserved_ids=[annotated[index].sample_id for index in sorted(selected_set)],
         quarantined_ids=[annotated[index].sample_id for index in sorted(quarantined)],

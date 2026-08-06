@@ -13,11 +13,18 @@ from math import ceil
 
 import polars as pl
 
-from services.evaluation.contamination_safe import SelectionResult, select as safe_select
+from services.evaluation.contamination_safe import (
+    SelectionProgress,
+    SelectionResult,
+    select as safe_select,
+)
 from services.evaluation.reservation_config import load_contamination_safe_config
 
 # (rows, n, seed) -> reservation selection. ``rows`` is the canonical schema.
-Selector = Callable[[pl.DataFrame, int, int], list[int] | SelectionResult]
+Selector = Callable[
+    [pl.DataFrame, int, int, SelectionProgress | None],
+    list[int] | SelectionResult,
+]
 
 _URL = r"(https?://|www\.)"
 
@@ -74,7 +81,12 @@ def _score(seed: int) -> pl.Expr:
     ) * clean + _tie_break(seed)
 
 
-def heuristic_select(rows: pl.DataFrame, n: int, seed: int) -> list[int]:
+def heuristic_select(
+    rows: pl.DataFrame,
+    n: int,
+    seed: int,
+    progress: SelectionProgress | None = None,
+) -> list[int]:
     """Default strategy: score for benchmark quality, then spread across strata.
 
     Selection is stratified over (language pair, domain) so the reserved pool
@@ -112,7 +124,12 @@ def heuristic_select(rows: pl.DataFrame, n: int, seed: int) -> list[int]:
     return picked["sample_id"].to_list()
 
 
-def random_select(rows: pl.DataFrame, n: int, seed: int) -> list[int]:
+def random_select(
+    rows: pl.DataFrame,
+    n: int,
+    seed: int,
+    progress: SelectionProgress | None = None,
+) -> list[int]:
     """Uniform sampling. Kept as an explicit opt-in baseline, never the default."""
     if n <= 0 or rows.height == 0:
         return []
@@ -125,9 +142,14 @@ def random_select(rows: pl.DataFrame, n: int, seed: int) -> list[int]:
     )
 
 
-def contamination_safe_select(rows: pl.DataFrame, n: int, seed: int) -> SelectionResult:
+def contamination_safe_select(
+    rows: pl.DataFrame,
+    n: int,
+    seed: int,
+    progress: SelectionProgress | None = None,
+) -> SelectionResult:
     """Ported test-set selection with document and near-duplicate protection."""
-    return safe_select(rows, n, seed, load_contamination_safe_config())
+    return safe_select(rows, n, seed, load_contamination_safe_config(), progress)
 
 
 SELECTORS: dict[str, Selector] = {

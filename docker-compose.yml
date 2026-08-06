@@ -32,7 +32,7 @@ services:
       context: ./backend
       args:
         INSTALL_EVALUATION: ${INSTALL_EVALUATION:-false}
-    command: ["/app/entrypoint.sh", "--reload"]
+    command: ["/app/entrypoint.sh"]
     environment:
       DATABASE_URL: ${DATABASE_URL}
       STORAGE_BACKEND: s3
@@ -42,16 +42,60 @@ services:
       S3_SECRET_KEY: minioadmin
       S3_USE_SSL: "false"
       WORK_DIR: /tmp/mtreg
+      IMPORT_STREAM_THRESHOLD_MB: ${IMPORT_STREAM_THRESHOLD_MB:-512}
+      IMPORT_BATCH_ROWS: ${IMPORT_BATCH_ROWS:-50000}
+      EVALUATION_CANDIDATE_LIMIT: ${EVALUATION_CANDIDATE_LIMIT:-50000}
+      EVALUATION_CANDIDATE_MULTIPLIER: ${EVALUATION_CANDIDATE_MULTIPLIER:-10}
       HF_HOME: /root/.cache/huggingface
-      DEBUG: "true"
+      DEBUG: "${DEBUG:-false}"
     ports:
       # 8001 on the host to stay clear of other local services on 8000
       - "8001:8000"
     volumes:
-      - ./backend:/app
       - ${HOST_HF_CACHE_DIR:-${HOME}/.cache/huggingface}:/root/.cache/huggingface
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
     extra_hosts: ["host.docker.internal:host-gateway"]
     depends_on:
+      minio:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: ./backend
+      args:
+        INSTALL_EVALUATION: ${INSTALL_EVALUATION:-false}
+    command: ["/app/entrypoint.sh", "worker"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      STORAGE_BACKEND: s3
+      S3_BUCKET: mtreg
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_ACCESS_KEY: minioadmin
+      S3_SECRET_KEY: minioadmin
+      S3_USE_SSL: "false"
+      WORK_DIR: /tmp/mtreg
+      IMPORT_STREAM_THRESHOLD_MB: ${IMPORT_STREAM_THRESHOLD_MB:-512}
+      IMPORT_BATCH_ROWS: ${IMPORT_BATCH_ROWS:-50000}
+      EVALUATION_CANDIDATE_LIMIT: ${EVALUATION_CANDIDATE_LIMIT:-50000}
+      EVALUATION_CANDIDATE_MULTIPLIER: ${EVALUATION_CANDIDATE_MULTIPLIER:-10}
+      HF_HOME: /root/.cache/huggingface
+      DEBUG: "${DEBUG:-false}"
+    volumes:
+      - ${HOST_HF_CACHE_DIR:-${HOME}/.cache/huggingface}:/root/.cache/huggingface
+      - importwork:/tmp/mtreg
+    restart: unless-stopped
+    cpus: ${IMPORT_WORKER_CPUS:-2.0}
+    mem_limit: ${IMPORT_WORKER_MEMORY_LIMIT:-8g}
+    stop_grace_period: 30s
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    depends_on:
+      backend:
+        condition: service_healthy
       minio:
         condition: service_healthy
 
@@ -61,11 +105,9 @@ services:
       VITE_API_URL: /api
     ports:
       - "5173:5173"
-    volumes:
-      - ./frontend:/app
-      - /app/node_modules
     depends_on:
       - backend
 
 volumes:
   miniodata:
+  importwork:

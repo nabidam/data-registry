@@ -1,6 +1,7 @@
 """Format readers. Each returns a raw polars DataFrame; normalization is separate."""
 
 import json
+from collections.abc import Iterator
 from pathlib import Path
 from xml.etree import ElementTree
 
@@ -58,3 +59,25 @@ def read_any(path: Path, fmt: str) -> pl.DataFrame:
             return read_tmx(path)
         case _:
             raise ValueError(f"unsupported format: {fmt} (supported: {SUPPORTED_FORMATS})")
+
+
+def iter_any(path: Path, fmt: str, *, batch_size: int) -> Iterator[pl.DataFrame]:
+    """Yield bounded frames for large delimited imports.
+
+    Polars' batched CSV reader keeps a multi-gigabyte upload out of process
+    memory. Formats without a streaming reader retain the existing behavior;
+    they are not the production large-import path.
+    """
+    if fmt not in {"csv", "tsv"}:
+        yield read_any(path, fmt)
+        return
+
+    reader = pl.read_csv_batched(
+        path,
+        separator="\t" if fmt == "tsv" else ",",
+        infer_schema_length=10_000,
+        ignore_errors=True,
+        batch_size=batch_size,
+    )
+    while batches := reader.next_batches(1):
+        yield batches[0]

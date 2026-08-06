@@ -51,7 +51,9 @@ class Batch(Base, TimestampMixin):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(200), unique=True)
     source_id: Mapped[int | None] = mapped_column(ForeignKey("sources.id"))
-    status: Mapped[str] = mapped_column(String(32), default="ready")  # ready | failed
+    status: Mapped[str] = mapped_column(
+        String(32), default="ready"
+    )  # queued | importing | ready | failed
     format: Mapped[str | None] = mapped_column(String(16))
     sample_count: Mapped[int] = mapped_column(BigInteger, default=0)
     parquet_uri: Mapped[str | None] = mapped_column(Text)

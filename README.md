@@ -5,7 +5,8 @@ organize them into immutable batches, define logical datasets, and export reprod
 snapshots for training.
 
 Metadata lives in PostgreSQL. Translation text lives in Parquet on object storage.
-DuckDB queries the Parquet files directly — no Spark, no data lake, no workers.
+DuckDB queries the Parquet files directly — no Spark or data lake. Heavy imports
+run in one small restartable worker so the API process remains responsive.
 
 ## Quick start
 
@@ -36,6 +37,8 @@ The full image runs `contamination_safe`; its first eligible import may download
 into the host Hugging Face cache, mounted at `/root/.cache/huggingface` in the backend container.
 Later container runs reuse it. Override the host location with `HOST_HF_CACHE_DIR` when needed.
 Both image variants install strictly from the committed `backend/uv.lock` file.
+Compose runs the code and dependency environment baked into each image; it does
+not bind-mount the source tree over `/app`. Rebuild after changing source code.
 
 For either Compose setup, set `INSTALL_EVALUATION=true` in `.env` and rebuild with
 `docker compose up --build` to include the optional evaluation dependencies.
@@ -47,17 +50,19 @@ For either Compose setup, set `INSTALL_EVALUATION=true` in `.env` and rebuild wi
 | MinIO console  | http://localhost:9001 (minioadmin / minioadmin) |
 | Postgres (full Compose only) | localhost:5433 (mtreg / mtreg) |
 
-Migrations run automatically when the backend container boots.
+Migrations run automatically when the backend container boots. The worker waits
+for the backend healthcheck and never runs Alembic itself.
 
 ## Workflow
 
 1. **Sources** — register where data comes from (WMT, Wikipedia, Human, …).
 2. **Imports** — upload CSV/TSV/JSON/JSONL/TMX/XLSX/Parquet. The browser sends large files to
-   MinIO in bounded 16 MB multipart requests, then the API accepts the import immediately and
-   normalizes it in-process. Each immutable batch is stored as canonical Parquet shards
-   (`batches/batch_N/part-*.parquet`) with per-sample metadata copied into Postgres. Set
-   `IMPORT_UPLOAD_PART_SIZE_MB` (minimum 5) and `PARQUET_SHARD_SIZE_MB` (default 256) to suit
-   the deployment's proxy and object-size limits.
+   MinIO in bounded 16 MB multipart requests, then the API queues the import immediately for the
+   dedicated worker. Large CSV/TSV files are normalized in bounded frames instead of being loaded
+   into RAM as one DataFrame. Each immutable batch is stored as canonical Parquet shards
+   (`batches/batch_N/attempt_ID/part-*.parquet`) with per-sample metadata copied into Postgres. Set
+   `IMPORT_UPLOAD_PART_SIZE_MB` (minimum 5), `IMPORT_BATCH_ROWS`, and `PARQUET_SHARD_SIZE_MB`
+   (default 256) to suit the deployment's proxy, memory, and object-size limits.
 3. **Evaluation reservation** — part of the same import: the selection pipeline holds a
    slice of every batch back as `RESERVED_EVALUATION` *before* the batch is eligible for
    training. Nothing downstream can opt out of this.
@@ -109,6 +114,17 @@ selection; hard-phenomenon top-ups; document holdout; and a cross-document embed
 importer assigns every selected benchmark row to `dev` or `test` with a deterministic stratified
 split and records its `human_verify` gold-subset flag in the immutable batch Parquet.
 
+For CSV/TSV files above `IMPORT_STREAM_THRESHOLD_MB` (default 512), expensive evaluation selection
+runs over a deterministic bounded reservoir (`EVALUATION_CANDIDATE_LIMIT`, default 50,000). The
+actual expensive selector input is at most the requested evaluation size multiplied by
+`EVALUATION_CANDIDATE_MULTIPLIER` (default 10), capped by that reservoir. Selecting 1,000 rows
+therefore runs LaBSE over 10,000 candidates rather than all 50,000.
+After selection, the worker streams over **every row in the complete corpus** and quarantines rows
+from selected documents and exact evaluation duplicates. Plausible semantic near-duplicates are
+prefiltered by shared token shingles and then verified with LaBSE cosine similarity. This avoids
+running a transformer over millions of unrelated rows while retaining semantic verification for
+likely near duplicates.
+
 Its policy lives in `backend/config/evaluation_reservation.yaml`; set
 `EVALUATION_RESERVATION_CONFIG` to a deployment copy. The import target still comes from
 `EVALUATION_PERCENT` and `EVALUATION_MAX_SAMPLES`, rather than the standalone script's
@@ -134,13 +150,56 @@ exact, MinHash, or embedding deduplication, plus rows excluded because they shar
 document or exceed the cross-document near-duplicate threshold, are `QUARANTINED`. They cannot
 enter a training snapshot or an evaluation set.
 
+### Import worker operations
+
+All import entry points finish by writing a durable `queued` job to PostgreSQL. A single dedicated
+worker claims jobs and records its attempt, phase, heartbeat, row count, shard count, and latest
+message in `batches.stats`. The Imports page polls only while a job is active and shows the same
+progress that appears in worker logs.
+
+The worker uses a PostgreSQL advisory lock, so accidentally starting a second worker does not run
+the same import twice. After a worker restart, an interrupted job is requeued and writes to a new
+attempt-specific object-storage prefix. A batch points to that prefix only after its PostgreSQL
+metadata transaction commits, so partial files from a failed attempt are never queried.
+
+Follow production progress with:
+
+```bash
+docker compose -f docker-compose.full.yml logs -f worker
+```
+
+Expected phases are `queued`, `claimed`, `downloading`, `normalizing`,
+`selecting_evaluation`, `preparing_contamination_scan`, `scanning_contamination`,
+`scanning_and_publishing`, and `complete`. Selection reports its current substage, including
+annotation, exact and MinHash deduplication, chunked LaBSE inference, embedding deduplication,
+document filtering, diversity selection, and contamination checks. Logs and UI include processed
+items, totals, and elapsed stage time, so a slow model load or CPU inference is distinguishable
+from a dead worker.
+Failures retain the exception type and message on the batch and in the worker log. The Imports page
+offers **Retry** for failed jobs; it reuses the raw object and creates a new isolated attempt.
+An `importing` row whose heartbeat is older than one minute is highlighted as stale in the UI.
+
+Compose limits the worker separately with `IMPORT_WORKER_CPUS` (default `2.0`) and
+`IMPORT_WORKER_MEMORY_LIMIT` (default `8g`). Temporary raw and Parquet files use the dedicated
+`importwork` volume. Size that volume for the raw upload plus normalized and final Parquet staging;
+large contamination-safe imports trade elapsed time for bounded memory and API responsiveness.
+LaBSE uses CPU unless the container can see a supported GPU. On CPU, model inference is normally
+the longest selection stage. Candidate embedding dedup uses deterministic random-hyperplane LSH
+instead of an all-pairs nearest-neighbor matrix, and k-center selection uses a deterministic
+128-dimensional projection rather than repeatedly scanning all 768 LaBSE dimensions.
+
+PostgreSQL is intentionally the job queue. Celery and Redis are not required for the registry's
+single sequential import workload; revisit that decision only if the system needs multiple job
+classes, priorities, scheduling, or concurrent workers.
+
 ### Reservation records
 
-Each import stores selection annotations in its immutable batch Parquet: `document_id`, feature
-flags, `evaluation_split` (`dev` or `test` for reserved rows), and `human_verify`. Batch statistics
-store the policy snapshot, seed, feature and quota results, each deduplication and quarantine count,
-allocation counts, selected-ID hash, and SHA-256 of the batch Parquet. Use those records to compare
-repeated imports or to audit an evaluation-set materialization without changing the batch.
+Each import stores `document_id`, `evaluation_split` (`dev` or `test` for reserved rows), and
+`human_verify` in its immutable batch Parquet. Contamination-safe feature annotations are populated
+for rows evaluated by the selector; they are null outside the bounded candidate pool rather than
+being reported as false. Batch statistics store the policy snapshot, seed, feature and quota
+results, each deduplication and quarantine count, full-corpus scan outcomes, allocation counts,
+selected-ID hash, and SHA-256 for every Parquet shard.
 
 ### Historical integrity
 

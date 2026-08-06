@@ -2,26 +2,79 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 
 import { DataTable } from '@/components/DataTable'
-import { Button, Card, ErrorBox, Field, Input, PageHeader, Select } from '@/components/ui'
+import { Badge, Button, Card, ErrorBox, Field, Input, PageHeader, Select } from '@/components/ui'
 import { useList } from '@/hooks/useResource'
 import { api } from '@/lib/api'
-import type { Batch, ReservationDefaults, Row, Source } from '@/types'
+import type { Batch, ImportStats, ReservationDefaults, Row, Source } from '@/types'
 
 type Inspection = { format: string; columns: string[]; preview: Row[] }
 type UploadStart = { batch: Batch; upload_id: string; part_size: number }
 type UploadedPart = { part_number: number; etag: string }
 
 const INSPECTION_LIMIT_BYTES = 16 * 1024 * 1024
+const ACTIVE_IMPORT_STATUSES = new Set(['uploading', 'queued', 'importing'])
+const WORKER_ACTIVE_STATUSES = new Set(['queued', 'importing'])
+
+function formatCount(value: number | undefined) {
+  return value === undefined ? '—' : value.toLocaleString()
+}
+
+function ImportProgressView({ batch }: { batch: Batch }) {
+  const stats = batch.stats as ImportStats | null
+  const progress = stats?.progress
+  if (!progress) return <span className="text-slate-400">—</span>
+  const heartbeatAge = progress.updated_at ? Date.now() - new Date(progress.updated_at).getTime() : 0
+  const heartbeatStale = batch.status === 'importing' && heartbeatAge > 60_000
+  const shards = progress.shards_total
+    ? `${progress.shards_processed ?? 0}/${progress.shards_total} shards`
+    : progress.shards_processed
+      ? `${progress.shards_processed} shards`
+      : null
+  const stageItems = progress.items_total
+    ? `${formatCount(progress.items_processed)}/${formatCount(progress.items_total)}`
+    : progress.items_processed !== undefined
+      ? formatCount(progress.items_processed)
+      : null
+  return (
+    <div className="min-w-64 whitespace-normal">
+      <div className="font-medium text-slate-700">{progress.phase?.replaceAll('_', ' ')}</div>
+      {progress.stage ? (
+        <div className="mt-0.5 text-xs font-medium text-slate-600">
+          {progress.stage.replaceAll('_', ' ')}
+          {stageItems ? ` · ${stageItems}` : ''}
+          {progress.stage_elapsed_seconds !== undefined
+            ? ` · ${progress.stage_elapsed_seconds.toLocaleString()}s`
+            : ''}
+        </div>
+      ) : null}
+      <div className="mt-0.5 text-xs text-slate-500">{progress.message}</div>
+      <div className="mt-1 text-xs tabular-nums text-slate-600">
+        {formatCount(progress.rows_processed)} rows{shards ? ` · ${shards}` : ''}
+        {stats?.attempt ? ` · attempt ${stats.attempt}` : ''}
+      </div>
+      {progress.updated_at ? (
+        <div className={`mt-0.5 text-xs ${heartbeatStale ? 'font-medium text-red-700' : 'text-slate-400'}`}>
+          {heartbeatStale ? 'Worker heartbeat is stale · ' : 'Updated '}
+          {new Date(progress.updated_at).toLocaleTimeString()}
+        </div>
+      ) : null}
+    </div>
+  )
+}
 
 export default function Imports() {
   const sources = useList<Source>('sources', { limit: 200 })
-  const batches = useList<Batch>('batches', { limit: 10 })
+  const batches = useList<Batch>('batches', { limit: 10 }, {
+    refetchInterval: (query) =>
+      query.state.data?.some((batch) => WORKER_ACTIVE_STATUSES.has(batch.status)) ? 2000 : false,
+  })
   const qc = useQueryClient()
 
   const [file, setFile] = useState<File | null>(null)
   const [inspection, setInspection] = useState<Inspection | null>(null)
   const [error, setError] = useState<unknown>(null)
   const [busy, setBusy] = useState(false)
+  const [retrying, setRetrying] = useState<number | null>(null)
   const [uploadProgress, setUploadProgress] = useState<number | null>(null)
   const [form, setForm] = useState({
     batch_name: '',
@@ -125,6 +178,19 @@ export default function Imports() {
     }
   }
 
+  async function retryImport(batchId: number) {
+    setRetrying(batchId)
+    setError(null)
+    try {
+      await api.post<Batch>(`/imports/${batchId}/retry`, {})
+      await qc.invalidateQueries({ queryKey: ['batches'] })
+    } catch (err) {
+      setError(err)
+    } finally {
+      setRetrying(null)
+    }
+  }
+
   const columnSelect = (key: keyof typeof form, label: string, optional = false) => (
     <Field label={label}>
       {inspection ? (
@@ -153,6 +219,26 @@ export default function Imports() {
         subtitle="Each import creates one immutable batch; a slice is reserved for evaluation before any of it becomes trainable"
       />
       <ErrorBox error={error} />
+      <ErrorBox error={batches.error} />
+
+      {batches.data?.some((batch) => ACTIVE_IMPORT_STATUSES.has(batch.status)) ? (
+        <Card className="mb-4 border-blue-200 bg-blue-50">
+          <div className="text-sm font-medium text-blue-950">Import worker activity</div>
+          <div className="mt-2 grid gap-2">
+            {batches.data
+              .filter((batch) => ACTIVE_IMPORT_STATUSES.has(batch.status))
+              .map((batch) => (
+                <div key={batch.id} className="flex flex-wrap items-start justify-between gap-3 text-sm">
+                  <div>
+                    <span className="font-medium">{batch.name}</span>{' '}
+                    <Badge>{batch.status}</Badge>
+                  </div>
+                  <ImportProgressView batch={batch} />
+                </div>
+              ))}
+          </div>
+        </Card>
+      ) : null}
 
       <Card className="mb-4">
         <form className="grid gap-3 md:grid-cols-4" onSubmit={submit}>
@@ -299,6 +385,11 @@ export default function Imports() {
           { key: 'format', header: 'Format' },
           { key: 'sample_count', header: 'Samples' },
           {
+            key: 'progress',
+            header: 'Worker progress',
+            render: (r) => <ImportProgressView batch={r as unknown as Batch} />,
+          },
+          {
             key: 'reserved',
             header: 'Evaluation',
             render: (r) =>
@@ -333,7 +424,22 @@ export default function Imports() {
                   ?.reservation?.selection?.human_verify ?? '—',
               ),
           },
-          { key: 'status', header: 'Status' },
+          { key: 'status', header: 'Status', render: (r) => <Badge>{String(r.status)}</Badge> },
+          {
+            key: 'actions',
+            header: '',
+            render: (r) =>
+              r.status === 'failed' ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  disabled={retrying === Number(r.id)}
+                  onClick={() => void retryImport(Number(r.id))}
+                >
+                  {retrying === Number(r.id) ? 'Retrying…' : 'Retry'}
+                </Button>
+              ) : null,
+          },
         ]}
       />
     </>

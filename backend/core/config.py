@@ -6,6 +6,7 @@ dev (docker compose + MinIO) and production (managed Postgres + S3/GCS).
 
 from functools import lru_cache
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -37,6 +38,14 @@ class Settings(BaseSettings):
     # Normalized batch data is stored as a set of immutable Parquet shards.
     # The limit applies to the compressed file written to object storage.
     parquet_shard_size_mb: int = 256
+
+    # Large delimited imports are processed in bounded frames. The evaluation
+    # selector receives only a deterministic candidate pool instead of the
+    # entire corpus, while every normalized row is still written to Parquet.
+    import_stream_threshold_mb: int = Field(default=512, ge=1)
+    import_batch_rows: int = Field(default=50_000, ge=1)
+    evaluation_candidate_limit: int = Field(default=50_000, ge=1)
+    evaluation_candidate_multiplier: int = Field(default=10, ge=1)
 
     gcs_bucket: str = "mtreg"
 

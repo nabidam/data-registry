@@ -1,12 +1,18 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import type { UseQueryOptions } from '@tanstack/react-query'
 
 import { api } from '@/lib/api'
 
 /** Thin wrappers over the REST endpoints; every resource follows the same shape. */
-export function useList<T>(resource: string, params?: Record<string, unknown>) {
+export function useList<T>(
+  resource: string,
+  params?: Record<string, unknown>,
+  options?: Pick<UseQueryOptions<T[]>, 'refetchInterval'>,
+) {
   return useQuery({
     queryKey: [resource, params],
     queryFn: () => api.get<T[]>(`/${resource}`, params as never),
+    refetchInterval: options?.refetchInterval,
   })
 }
 

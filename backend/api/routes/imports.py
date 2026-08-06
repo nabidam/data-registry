@@ -1,21 +1,23 @@
+import asyncio
 import shutil
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, UploadFile
+from fastapi import APIRouter, Depends, File, Form, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.config import settings
 from core.errors import BadRequest, NotFound
-from db.session import SessionLocal, get_session
+from db.session import get_session
 from models import Batch
-from schemas import BatchOut, ColumnMapping
+from schemas import BatchOut
 from services.evaluation.reservation import ReservationPolicy
 from services.evaluation.reservation_config import load_contamination_safe_config
 from services.evaluation.selectors import SELECTORS
 from services.ingestion.readers import SUPPORTED_FORMATS, detect_format, read_any
-from services.ingestion.service import batch_keys, ingest_file, ingest_stored_file
+from services.ingestion.service import batch_keys
 from storage import get_storage
 
 router = APIRouter(prefix="/imports", tags=["imports"])
@@ -90,56 +92,6 @@ def _upload_details(batch: Batch) -> dict:
     return details
 
 
-async def _process_uploaded_batch(batch_id: int, filename: str, payload: ImportCompleteIn) -> None:
-    """Run after the 202 response, with its own DB session and local work file."""
-    work = Path(settings.work_dir) / "uploads" / f"batch_{batch_id}_{uuid4().hex}_{filename}"
-    try:
-        async with SessionLocal() as session:
-            batch = await session.get(Batch, batch_id)
-            if batch is None:
-                return
-            raw_key, _ = batch_keys(batch.id, filename)
-            get_storage().get_file(raw_key, work)
-            mapping = ColumnMapping(
-                source_text=payload.source_column,
-                target_text=payload.target_column,
-                src_lang=payload.src_lang_column,
-                tgt_lang=payload.tgt_lang_column,
-                domain=payload.domain_column,
-                quality=payload.quality_column,
-                document_id=payload.document_id_column,
-            )
-            await ingest_stored_file(
-                session,
-                batch=batch,
-                local_file=work,
-                filename=filename,
-                src_lang=payload.src_lang,
-                tgt_lang=payload.tgt_lang,
-                domain=payload.domain,
-                mapping=mapping,
-                fmt=payload.format,
-                policy=ReservationPolicy.resolve(
-                    percent=payload.evaluation_percent,
-                    max_samples=payload.evaluation_max_samples,
-                    selector=payload.evaluation_selector,
-                    seed=payload.random_seed,
-                ),
-            )
-    except Exception as exc:
-        # A background failure must be visible in the batch list; never leave an
-        # import looking as though it is still running forever.
-        async with SessionLocal() as session:
-            batch = await session.get(Batch, batch_id)
-            if batch is not None:
-                batch.status = "failed"
-                batch.stats = {"error": str(exc)}
-                await session.commit()
-        raise
-    finally:
-        work.unlink(missing_ok=True)
-
-
 @router.get("/formats")
 async def formats():
     return {"formats": SUPPORTED_FORMATS}
@@ -170,12 +122,13 @@ async def start_import(payload: ImportStartIn, session: AsyncSession = Depends(g
     await session.flush()
     raw_key, _ = batch_keys(batch.id, filename)
     try:
-        upload_id = get_storage().create_multipart_upload(raw_key)
+        storage = await asyncio.to_thread(get_storage)
+        upload_id = await asyncio.to_thread(storage.create_multipart_upload, raw_key)
     except Exception as exc:
         await session.rollback()
         raise BadRequest(f"could not start object-storage upload: {exc}") from exc
 
-    batch.raw_uri = get_storage().uri(raw_key)
+    batch.raw_uri = storage.uri(raw_key)
     batch.stats = {"upload": {"id": upload_id, "part_size": part_size, "bytes": payload.size}}
     await session.commit()
     await session.refresh(batch)
@@ -204,7 +157,14 @@ async def upload_part(
     filename = _safe_filename(Path(batch.raw_uri or "").name)
     raw_key, _ = batch_keys(batch.id, filename)
     try:
-        etag = get_storage().upload_multipart_part(raw_key, upload_id, part_number, file.file)
+        storage = await asyncio.to_thread(get_storage)
+        etag = await asyncio.to_thread(
+            storage.upload_multipart_part,
+            raw_key,
+            upload_id,
+            part_number,
+            file.file,
+        )
     except Exception as exc:
         raise BadRequest(f"could not store upload part: {exc}") from exc
     return {"part_number": part_number, "etag": etag}
@@ -214,10 +174,9 @@ async def upload_part(
 async def complete_import(
     batch_id: int,
     payload: ImportCompleteIn,
-    background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_session),
 ):
-    """Finalize object storage, then normalize outside the browser request."""
+    """Finalize object storage and enqueue normalization outside the API process."""
     batch = await session.get(Batch, batch_id)
     if batch is None:
         raise NotFound("batch", batch_id)
@@ -235,30 +194,82 @@ async def complete_import(
     if len({part["PartNumber"] for part in object_parts}) != len(object_parts):
         raise BadRequest("multipart part numbers must be unique")
     try:
-        get_storage().complete_multipart_upload(raw_key, upload["id"], object_parts)
+        storage = await asyncio.to_thread(get_storage)
+        await asyncio.to_thread(
+            storage.complete_multipart_upload,
+            raw_key,
+            upload["id"],
+            object_parts,
+        )
     except Exception as exc:
         raise BadRequest(f"could not complete object-storage upload: {exc}") from exc
 
     batch.source_id = payload.source_id
     batch.format = (payload.format or detect_format(filename)).lower()
     batch.notes = payload.notes
-    batch.status = "importing"
-    batch.stats = None
+    # Keep the complete job specification in Postgres. The worker can resume a
+    # queued job after either service is restarted, without asking the browser
+    # to upload the object again.
+    now = datetime.now(UTC).isoformat()
+    batch.status = "queued"
+    batch.stats = {
+        "job": payload.model_dump(exclude={"parts"}),
+        "queued_at": now,
+        "attempt": 0,
+        "progress": {
+            "phase": "queued",
+            "message": "Upload complete; waiting for the import worker",
+            "rows_processed": 0,
+            "shards_processed": 0,
+            "updated_at": now,
+        },
+    }
     await session.commit()
     await session.refresh(batch)
-    background_tasks.add_task(_process_uploaded_batch, batch.id, filename, payload)
+    return batch
+
+
+@router.post("/{batch_id}/retry", response_model=BatchOut, status_code=202)
+async def retry_import(batch_id: int, session: AsyncSession = Depends(get_session)):
+    """Requeue a failed import without uploading its immutable raw object again."""
+    batch = await session.get(Batch, batch_id)
+    if batch is None:
+        raise NotFound("batch", batch_id)
+    stats = dict(batch.stats or {})
+    if batch.status != "failed":
+        raise BadRequest(f"only failed imports can be retried; batch is {batch.status}")
+    if not batch.raw_uri or not isinstance(stats.get("job"), dict):
+        raise BadRequest("failed import has no resumable raw object and job specification")
+
+    now = datetime.now(UTC).isoformat()
+    previous_error = stats.pop("error", None)
+    batch.status = "queued"
+    batch.stats = {
+        **stats,
+        "queued_at": now,
+        "previous_error": previous_error,
+        "progress": {
+            "phase": "queued",
+            "message": "Retry requested; waiting for the import worker",
+            "rows_processed": 0,
+            "shards_processed": 0,
+            "updated_at": now,
+        },
+    }
+    await session.commit()
+    await session.refresh(batch)
     return batch
 
 
 @router.post("/inspect")
 async def inspect(file: UploadFile = File(...), partial: bool = Form(False)):
     """Peek at a file's columns so the UI can offer a column mapping."""
-    path = _stage_upload(file)
+    path = await asyncio.to_thread(_stage_upload, file)
     try:
         fmt = detect_format(file.filename or "")
         if partial and fmt in {"csv", "tsv", "jsonl"}:
-            _discard_incomplete_line(path)
-        df = read_any(path, fmt).head(5)
+            await asyncio.to_thread(_discard_incomplete_line, path)
+        df = await asyncio.to_thread(lambda: read_any(path, fmt).head(5))
         return {"format": fmt, "columns": df.columns, "preview": df.to_dicts()}
     except Exception as exc:
         raise BadRequest(str(exc)) from exc
@@ -266,7 +277,7 @@ async def inspect(file: UploadFile = File(...), partial: bool = Form(False)):
         path.unlink(missing_ok=True)
 
 
-@router.post("", response_model=BatchOut, status_code=201)
+@router.post("", response_model=BatchOut, status_code=202)
 async def create_import(
     file: UploadFile = File(...),
     batch_name: str = Form(...),
@@ -289,42 +300,60 @@ async def create_import(
     random_seed: int | None = Form(None),
     session: AsyncSession = Depends(get_session),
 ):
-    """Import a raw file as one immutable ingestion batch.
-
-    Part of the same transaction: the evaluation-selection pipeline reserves a
-    slice of the batch before any of it becomes trainable. The reservation
-    settings default to the application config and can be overridden per import.
-    """
-    path = _stage_upload(file)
-    mapping = ColumnMapping(
-        source_text=source_column,
-        target_text=target_column,
-        src_lang=src_lang_column,
-        tgt_lang=tgt_lang_column,
-        domain=domain_column,
-        quality=quality_column,
-        document_id=document_id_column,
-    )
+    """Stage a conventional multipart upload and queue it for the worker."""
+    if file.size and file.size >= settings.import_stream_threshold_mb * 1024 * 1024:
+        raise BadRequest("large imports must use the resumable /imports/start upload flow")
+    path = await asyncio.to_thread(_stage_upload, file)
     try:
-        return await ingest_file(
-            session,
-            local_file=path,
-            filename=file.filename or "upload.dat",
-            batch_name=batch_name,
+        filename = _safe_filename(file.filename or "upload.dat")
+        resolved_format = (format or detect_format(filename)).lower()
+        batch = Batch(
+            name=batch_name,
             source_id=source_id,
-            src_lang=src_lang,
-            tgt_lang=tgt_lang,
-            domain=domain,
-            mapping=mapping,
-            fmt=format,
+            status="uploading",
+            format=resolved_format,
             notes=notes,
-            policy=ReservationPolicy.resolve(
-                percent=evaluation_percent,
-                max_samples=evaluation_max_samples,
-                selector=evaluation_selector,
-                seed=random_seed,
-            ),
         )
+        session.add(batch)
+        await session.flush()
+        raw_key, _ = batch_keys(batch.id, filename)
+        storage = await asyncio.to_thread(get_storage)
+        batch.raw_uri = await asyncio.to_thread(storage.put_file, path, raw_key)
+        now = datetime.now(UTC).isoformat()
+        batch.status = "queued"
+        batch.stats = {
+            "job": {
+                "src_lang": src_lang,
+                "tgt_lang": tgt_lang,
+                "source_id": source_id,
+                "domain": domain,
+                "source_column": source_column,
+                "target_column": target_column,
+                "src_lang_column": src_lang_column,
+                "tgt_lang_column": tgt_lang_column,
+                "domain_column": domain_column,
+                "quality_column": quality_column,
+                "document_id_column": document_id_column,
+                "format": resolved_format,
+                "notes": notes,
+                "evaluation_percent": evaluation_percent,
+                "evaluation_max_samples": evaluation_max_samples,
+                "evaluation_selector": evaluation_selector,
+                "random_seed": random_seed,
+            },
+            "queued_at": now,
+            "attempt": 0,
+            "progress": {
+                "phase": "queued",
+                "message": "Upload complete; waiting for the import worker",
+                "rows_processed": 0,
+                "shards_processed": 0,
+                "updated_at": now,
+            },
+        }
+        await session.commit()
+        await session.refresh(batch)
+        return batch
     except Exception as exc:
         await session.rollback()
         raise BadRequest(str(exc)) from exc

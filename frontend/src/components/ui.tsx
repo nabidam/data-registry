@@ -79,6 +79,9 @@ export function Textarea(props: React.TextareaHTMLAttributes<HTMLTextAreaElement
 
 const TONES: Record<string, string> = {
   ready: 'bg-emerald-100 text-emerald-800',
+  queued: 'bg-blue-100 text-blue-800',
+  importing: 'bg-amber-100 text-amber-800',
+  uploading: 'bg-violet-100 text-violet-800',
   TRAINABLE: 'bg-emerald-100 text-emerald-800',
   failed: 'bg-red-100 text-red-800',
   RESERVED_EVALUATION: 'bg-amber-100 text-amber-800',

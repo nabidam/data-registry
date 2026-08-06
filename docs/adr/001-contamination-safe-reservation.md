@@ -35,3 +35,18 @@ Document holdout can remove a large fraction of corpora with many chunks per doc
 `selection.max_test_documents` when the expected holdout would make the trainable pool too small.
 The importer preserves deterministic decisions by deriving them from the configured seed and input
 rows.
+
+For large CSV/TSV imports, evaluation candidates are chosen from a deterministic bounded reservoir.
+The expensive selector input is further bounded to a configurable multiple of the requested
+evaluation size. Candidate embedding deduplication uses deterministic random-hyperplane LSH rather
+than quadratic all-pairs nearest neighbors. Diversity-aware k-center selection uses a deterministic
+bounded-dimensional projection. The document cap is ignored when document IDs are absent, because
+synthetic per-row document IDs must not reduce the requested evaluation-set size.
+
+The contamination decision is not bounded to the selection reservoir. After selection, every
+normalized shard is streamed through selected-document and exact-source checks. Rows sharing a
+configured token shingle with selected evaluation text are then semantically verified with LaBSE;
+this lexical prefilter avoids infeasible transformer inference over millions of unrelated rows.
+This second pass is required before the batch can become `ready`; rows it finds are permanently
+`QUARANTINED`. The batch report records effective candidate size, selection timings, full-corpus
+quarantine counts, and the number of rows receiving semantic verification.

@@ -43,4 +43,8 @@ async def app_settings():
         "evaluation_max_samples": settings.evaluation_max_samples,
         "evaluation_selector": settings.evaluation_selector,
         "random_seed": settings.random_seed,
+        "import_stream_threshold_mb": settings.import_stream_threshold_mb,
+        "import_batch_rows": settings.import_batch_rows,
+        "evaluation_candidate_limit": settings.evaluation_candidate_limit,
+        "evaluation_candidate_multiplier": settings.evaluation_candidate_multiplier,
     }

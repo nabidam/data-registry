@@ -64,6 +64,23 @@ def allocate(df: pl.DataFrame, policy: ReservationPolicy) -> tuple[pl.DataFrame,
     """
     target = reservation_size(df.height, policy.percent, policy.max_samples)
     selection = get_selector(policy.selector)(df, target, policy.seed)
+    return apply_selection(df, policy, selection, imported_count=df.height)
+
+
+def apply_selection(
+    df: pl.DataFrame,
+    policy: ReservationPolicy,
+    selection: SelectionResult | list[int],
+    *,
+    imported_count: int,
+) -> tuple[pl.DataFrame, dict]:
+    """Apply a selection made from a bounded candidate pool to one frame.
+
+    Large imports select from a deterministic bounded pool, then call this
+    function for every normalized shard. Rows not present in the selection
+    remain trainable and never need to be held in memory together.
+    """
+    target = reservation_size(imported_count, policy.percent, policy.max_samples)
     if isinstance(selection, SelectionResult):
         reserved = selection.reserved_ids
         quarantined = selection.quarantined_ids
@@ -105,13 +122,16 @@ def allocate(df: pl.DataFrame, policy: ReservationPolicy) -> tuple[pl.DataFrame,
         ),
         pl.Series(
             "length_bucket",
-            [annotations.get(int(sample_id), {}).get("length_bucket") for sample_id in df["sample_id"]],
+            [
+                annotations.get(int(sample_id), {}).get("length_bucket")
+                for sample_id in df["sample_id"]
+            ],
             dtype=pl.Utf8,
         ),
         *[
             pl.Series(
                 column,
-                [annotations.get(int(sample_id), {}).get(column, False) for sample_id in df["sample_id"]],
+                [annotations.get(int(sample_id), {}).get(column) for sample_id in df["sample_id"]],
                 dtype=pl.Boolean,
             )
             for column in (
@@ -124,23 +144,26 @@ def allocate(df: pl.DataFrame, policy: ReservationPolicy) -> tuple[pl.DataFrame,
         ],
         pl.Series(
             "rare_term_score",
-            [annotations.get(int(sample_id), {}).get("rare_term_score") for sample_id in df["sample_id"]],
+            [
+                annotations.get(int(sample_id), {}).get("rare_term_score")
+                for sample_id in df["sample_id"]
+            ],
             dtype=pl.Float64,
         ),
     )
     report = {
         **policy.as_dict(),
-        "imported": df.height,
+        "imported": imported_count,
         "target": target,
         "reserved": len(reserved),
         "quarantined": len(quarantined),
-        "trainable": df.height - len(reserved) - len(quarantined),
+        "trainable": imported_count - len(reserved) - len(quarantined),
         "selection": selector_report,
     }
     log.info(
         "reserved %s/%s samples for evaluation via %r selector",
         report["reserved"],
-        df.height,
+        imported_count,
         policy.selector,
     )
     return df, report

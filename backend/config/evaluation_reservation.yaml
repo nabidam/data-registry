@@ -49,11 +49,18 @@ embeddings:
 
 diversity:
   strategy: kcenter
+  # Random projection preserves useful cosine geometry while avoiding repeated
+  # 768-dimensional k-center scans over the candidate pool.
+  projection_dimensions: 128
 
 contamination:
   document_level_holdout: true
   near_dup_check_enabled: true
   near_dup_cosine_threshold: 0.92
+  # Full-corpus LaBSE inference is limited to rows sharing a lexical shingle
+  # with a selected evaluation row. At this high cosine threshold, that keeps
+  # semantic verification focused on plausible near duplicates.
+  semantic_prefilter_shingle_size: 5
 
 splits:
   dev_test_split: true

@@ -141,11 +141,14 @@ Store only references.
                         │
                         ▼
                   FastAPI Backend
-                        │
-        ┌───────────────┼───────────────┐
-        ▼               ▼               ▼
- PostgreSQL        Dataset Builder     Object Storage
- Metadata            DuckDB           MinIO / S3 / GCS
+                        │ queues imports
+                        ▼
+                   PostgreSQL ◄──── Import Worker
+                  Metadata/jobs            │
+                        │                   ▼
+                        ├── Dataset Builder / DuckDB
+                        └────────────────► Object Storage
+                                           MinIO / S3 / GCS
 ```
 
 ---
