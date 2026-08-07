@@ -48,6 +48,10 @@ services:
       EVALUATION_CANDIDATE_MULTIPLIER: ${EVALUATION_CANDIDATE_MULTIPLIER:-10}
       HF_HOME: /root/.cache/huggingface
       DEBUG: "${DEBUG:-false}"
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      http_proxy: ""
+      https_proxy: ""
     ports:
       # 8001 on the host to stay clear of other local services on 8000
       - "8001:8000"
@@ -94,6 +98,10 @@ services:
       EVALUATION_CANDIDATE_MULTIPLIER: ${EVALUATION_CANDIDATE_MULTIPLIER:-10}
       HF_HOME: /root/.cache/huggingface
       DEBUG: "${DEBUG:-false}"
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      http_proxy: ""
+      https_proxy: ""
     volumes:
       - ./backend:/app
       - backendvenv:/app/.venv
