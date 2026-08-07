@@ -1,8 +1,8 @@
-"""Durable, singleton import worker backed by PostgreSQL.
+"""Durable singleton worker for imports and dataset reservations.
 
-The worker deliberately handles one import at a time. Imports are CPU, memory,
-disk, and database intensive; parallel execution on one registry host makes the
-API less reliable without improving useful throughput.
+The worker deliberately handles one heavy job at a time. Imports and contamination
+scans are CPU, memory, disk, and database intensive; parallel execution on one
+registry host makes the API less reliable without improving useful throughput.
 """
 
 import asyncio
@@ -19,8 +19,9 @@ from sqlalchemy import select, text
 from core.config import settings
 from core.logging import setup_logging
 from db.session import SessionLocal, engine
-from models import Batch
+from models import Batch, DatasetDefinition, DatasetReservation
 from schemas import ColumnMapping
+from services.evaluation.dataset_reservation import run_dataset_reservation
 from services.evaluation.reservation import ReservationPolicy
 from services.ingestion.service import batch_keys, ingest_stored_file
 from storage import get_storage
@@ -69,7 +70,7 @@ def _cleanup_stale_work() -> tuple[int, int]:
 
 
 async def _recover_interrupted_jobs() -> int:
-    """Requeue jobs left importing after the previous singleton exited."""
+    """Requeue heavy jobs interrupted when the previous singleton exited."""
     recovered = 0
     async with SessionLocal() as session:
         rows = await session.execute(
@@ -96,7 +97,55 @@ async def _recover_interrupted_jobs() -> int:
                 recovered += 1
             batch.stats = stats
         await session.commit()
+    async with SessionLocal() as session:
+        rows = await session.execute(
+            select(DatasetReservation)
+            .where(DatasetReservation.status == "running")
+            .with_for_update(skip_locked=True)
+        )
+        for reservation in rows.scalars():
+            reservation.status = "queued"
+            reservation.error = None
+            recovered += 1
+        await session.commit()
     return recovered
+
+
+async def _claim_dataset_reservation() -> int | None:
+    async with SessionLocal() as session:
+        result = await session.execute(
+            select(DatasetReservation.id)
+            .where(DatasetReservation.status == "queued")
+            .order_by(DatasetReservation.id)
+            .with_for_update(skip_locked=True)
+            .limit(1)
+        )
+        reservation_id = result.scalar_one_or_none()
+        if reservation_id is None:
+            return None
+        reservation = await session.get(DatasetReservation, reservation_id)
+        reservation.status = "running"
+        await session.commit()
+        log.info("claimed dataset reservation id=%s", reservation_id)
+        return reservation_id
+
+
+async def _process_dataset_reservation(reservation_id: int) -> None:
+    async with SessionLocal() as session:
+        reservation = await session.get(DatasetReservation, reservation_id)
+        if reservation is None:
+            return
+        definition = await session.get(DatasetDefinition, reservation.dataset_id)
+        if definition is None:
+            reservation.status = "failed"
+            reservation.error = "dataset definition no longer exists"
+            await session.commit()
+            return
+        try:
+            await run_dataset_reservation(session, reservation, definition)
+        except Exception:
+            # run_dataset_reservation persists the failure for API/UI polling.
+            return
 
 
 async def _claim_batch() -> tuple[int, str, dict, str] | None:
@@ -386,14 +435,18 @@ async def _run_as_singleton() -> None:
             )
         recovered = await _recover_interrupted_jobs()
         if recovered:
-            log.warning("requeued %s interrupted import job(s)", recovered)
+            log.warning("requeued %s interrupted worker job(s)", recovered)
 
         while True:
             claimed = await _claim_batch()
-            if claimed is None:
-                await asyncio.sleep(POLL_SECONDS)
+            if claimed is not None:
+                await _process_batch(*claimed)
                 continue
-            await _process_batch(*claimed)
+            reservation_id = await _claim_dataset_reservation()
+            if reservation_id is not None:
+                await _process_dataset_reservation(reservation_id)
+                continue
+            await asyncio.sleep(POLL_SECONDS)
 
 
 async def run() -> None:

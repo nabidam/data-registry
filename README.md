@@ -66,11 +66,15 @@ for the backend healthcheck and never runs Alembic itself.
 3. **Evaluation reservation** — part of the same import: the selection pipeline holds a
    slice of every batch back as `RESERVED_EVALUATION` *before* the batch is eligible for
    training. Nothing downstream can opt out of this.
-4. **Datasets** — logical definitions: which batches, which filters. Nothing is copied.
-5. **Splits** — reproducible train/validation/test ratios plus a seed.
-6. **Snapshots** — materialize a dataset + split into `train/validation/test.parquet` and
+4. **Datasets** — logical definitions: whole batches or deterministic per-batch amounts, plus
+   filters. Nothing is copied.
+5. **Optional dataset reservation** — select evaluation rows from an existing logical
+   composition, then quarantine contamination risks before training splits are applied.
+6. **Splits** — reproducible train/validation/test ratios plus a seed.
+7. **Snapshots** — materialize the remaining `TRAINABLE` composition into
+   `train/validation/test.parquet` and
    `manifest.json` (with row counts and SHA-256 per file).
-7. **Experiments / Models** — record training runs and checkpoints, referencing a snapshot
+8. **Experiments / Models** — record training runs and checkpoints, referencing a snapshot
    and an MLflow run id.
 
 Annotations (ignore, tags, comments, quality, review status) never modify the original data;
@@ -207,6 +211,39 @@ being reported as false. Batch statistics store the policy snapshot, seed, featu
 results, each deduplication and quarantine count, full-corpus scan outcomes, allocation counts,
 selected-ID hash, and SHA-256 for every Parquet shard.
 
+### Custom dataset compositions
+
+The Datasets page retains the original whole-batch workflow and adds optional per-batch rules.
+Each included batch can contribute all eligible rows, an exact percentage, or an exact maximum
+row count. For example, a definition can include all of A, 50% of B, all of C, and 500,000 rows
+of D. The amounts and composition seed are user-configurable; these numbers are not defaults.
+
+Global dataset filters are applied first. Rows are then ranked inside each batch by a deterministic
+hash of `sample_id + composition_seed`, and each rule is applied to that ranking. Composition is
+resolved before allocation filtering. Consequently, reserving or quarantining a selected row does
+not cause an unselected replacement row to drift into the logical dataset.
+
+Existing definitions with only `batch_ids` keep their original semantics. Custom rules are stored
+as additional metadata and do not materialize or copy dataset rows.
+
+### Reserving from a dataset composition
+
+An optional dataset reservation can specify a selector, seed, exact target or percentage plus cap,
+and a contamination scan scope. `contamination_safe` selects benchmark candidates from the fixed
+composition. Registry scope—the safe default—then streams all ready batches through document,
+exact-match, lexical-prefilter, and semantic checks. Composition scope scans only the selected
+logical dataset when that narrower guarantee is intentional.
+
+Selected rows become globally and permanently `RESERVED_EVALUATION`; leakage-risk rows become
+globally and permanently `QUARANTINED`. The existing singleton worker processes these durable jobs
+after queued imports, so an API restart does not lose them. Snapshot creation is temporarily
+blocked while any reservation is running, preventing a partially updated allocation view.
+
+Each reservation records the frozen composition, policy, seeds, target, counts, selected-ID hash,
+scan scope, semantic-check count, and historical snapshot overlaps. Its selected rows also retain
+generated dev/test and human-verification metadata. Evaluation sets can select a reservation to
+materialize that exact benchmark collection.
+
 ### Historical integrity
 
 Snapshots are immutable and are never rewritten. If a sample is reserved *after* an existing
@@ -216,10 +253,12 @@ historically contaminated instead of history being altered.
 
 ## Reproducibility
 
-Splits are assigned by hashing `sample_id + seed` into a uniform bucket, so the same dataset
-definition and seed always produce the same split — without shuffling or storing per-sample
-split assignments. The manifest records the definition, the filters, the seed, the counts,
-and a checksum for every exported file.
+Splits are assigned only after the builder restricts the fixed composition to its current
+`TRAINABLE` rows. Hashing `sample_id + split seed` into a uniform bucket produces the configured
+train/validation/test ratios without shuffling or storing per-sample assignments. Reserved,
+quarantined, and ignored rows never enter any of those three files. The manifest records batch
+rules, composition seed, filters, completed reservation reports, split seed, counts, and a checksum
+for every exported file.
 
 ## Storage backends
 

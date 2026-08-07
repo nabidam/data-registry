@@ -114,7 +114,30 @@ export type Dataset = {
   name: string
   description: string | null
   batch_ids: number[]
+  batch_rules: BatchRule[]
+  composition_seed: number
   filters: Filters
+  created_at: string
+}
+
+export type BatchRule = {
+  batch_id: number
+  mode: 'all' | 'percent' | 'count'
+  value: number | null
+}
+
+export type DatasetReservation = {
+  id: number
+  dataset_id: number
+  status: 'queued' | 'running' | 'ready' | 'failed'
+  selector: 'contamination_safe' | 'heuristic' | 'random'
+  percent: number
+  max_samples: number
+  target_count: number | null
+  seed: number
+  contamination_scope: 'registry' | 'composition'
+  report: Record<string, unknown> | null
+  error: string | null
   created_at: string
 }
 
@@ -149,6 +172,7 @@ export type EvaluationSet = {
   kind: string
   parquet_uri: string | null
   sample_count: number
+  spec?: Record<string, unknown> | null
   created_at: string
 }
 

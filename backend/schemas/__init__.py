@@ -1,9 +1,9 @@
 """API schemas. Read models mirror the entities; write models stay minimal."""
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from core.allocation import Allocation
 from services.dataset_builder.filters import DatasetFilters, EvaluationSetFilters
@@ -98,11 +98,45 @@ class AnnotationOut(ORMModel):
 
 
 # --- dataset definitions ---------------------------------------------------
+class BatchRule(BaseModel):
+    """Deterministic contribution from one immutable batch."""
+
+    batch_id: int = Field(gt=0)
+    mode: Literal["all", "percent", "count"] = "all"
+    value: float | int | None = None
+
+    @model_validator(mode="after")
+    def validate_value(self) -> "BatchRule":
+        if self.mode == "all":
+            self.value = None
+            return self
+        if self.value is None:
+            raise ValueError(f"{self.mode} batch rules require a value")
+        if self.mode == "percent" and not 0 < float(self.value) <= 100:
+            raise ValueError("batch-rule percent must be greater than 0 and at most 100")
+        if self.mode == "count" and (
+            isinstance(self.value, bool)
+            or float(self.value) < 1
+            or not float(self.value).is_integer()
+        ):
+            raise ValueError("batch-rule count must be a positive whole number")
+        return self
+
+
 class DatasetIn(BaseModel):
     name: str
     description: str | None = None
     batch_ids: list[int] = []
+    batch_rules: list[BatchRule] = []
+    composition_seed: int = 42
     filters: DatasetFilters = DatasetFilters()
+
+    @model_validator(mode="after")
+    def validate_batch_rules(self) -> "DatasetIn":
+        ids = [rule.batch_id for rule in self.batch_rules]
+        if len(ids) != len(set(ids)):
+            raise ValueError("each batch may appear only once in batch_rules")
+        return self
 
 
 class DatasetOut(ORMModel):
@@ -110,7 +144,34 @@ class DatasetOut(ORMModel):
     name: str
     description: str | None
     batch_ids: list
+    batch_rules: list
+    composition_seed: int
     filters: dict
+    created_at: datetime
+
+
+class DatasetReservationIn(BaseModel):
+    selector: Literal["contamination_safe", "heuristic", "random"] = "contamination_safe"
+    percent: float = Field(default=1.0, ge=0, le=100)
+    max_samples: int = Field(default=10_000, ge=0)
+    target_count: int | None = Field(default=None, ge=0)
+    seed: int = 42
+    contamination_scope: Literal["registry", "composition"] = "registry"
+    confirm_irreversible: Literal[True]
+
+
+class DatasetReservationOut(ORMModel):
+    id: int
+    dataset_id: int
+    status: str
+    selector: str
+    percent: float
+    max_samples: int
+    target_count: int | None
+    seed: int
+    contamination_scope: str
+    report: dict | None
+    error: str | None
     created_at: datetime
 
 
@@ -173,6 +234,7 @@ class EvaluationSetIn(BaseModel):
     kind: str = "sampled"
     filters: EvaluationSetFilters = EvaluationSetFilters()
     sample_ids: list[int] | None = None
+    reservation_id: int | None = None
     limit: int | None = None
     seed: int = 42
 

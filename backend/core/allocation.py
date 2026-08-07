@@ -1,8 +1,8 @@
 """Sample allocation: the single lifecycle flag every sample carries.
 
-Replaces the old ``status`` (active|ignored) column. Allocation is decided at
-ingestion time — before a sample is ever visible to the dataset builder — so
-evaluation data can never leak into a training snapshot.
+Replaces the old ``status`` (active|ignored) column. Allocation is initially
+decided at ingestion time. A later dataset-level reservation may permanently
+protect existing rows before a new snapshot is allowed to start.
 
 Invariants:
 * ``TRAINABLE``           may appear in snapshots.

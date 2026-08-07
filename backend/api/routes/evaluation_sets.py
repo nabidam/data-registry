@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.errors import NotFound
 from db.session import get_session
-from models import EvaluationSet
+from models import DatasetReservation, EvaluationSet
 from schemas import EvaluationSetIn, EvaluationSetOut
 from services.evaluation.service import build_evaluation_set
 from utils.duck import connect, parquet_source
@@ -29,6 +29,10 @@ async def create_set(payload: EvaluationSetIn, session: AsyncSession = Depends(g
     Only RESERVED_EVALUATION samples are eligible; anything else is ignored, so a
     set can never pull a trainable sample into a benchmark.
     """
+    if payload.reservation_id is not None:
+        reservation = await session.get(DatasetReservation, payload.reservation_id)
+        if reservation is None or reservation.status != "ready":
+            raise NotFound("ready dataset reservation", payload.reservation_id)
     eval_set = EvaluationSet(
         name=payload.name,
         description=payload.description,
@@ -42,6 +46,7 @@ async def create_set(payload: EvaluationSetIn, session: AsyncSession = Depends(g
         eval_set,
         filters=payload.filters,
         sample_ids=payload.sample_ids,
+        reservation_id=payload.reservation_id,
         limit=payload.limit,
         seed=payload.seed,
     )

@@ -5,12 +5,13 @@ import { DataTable } from '@/components/DataTable'
 import { Button, Card, ErrorBox, Field, Input, PageHeader, Select } from '@/components/ui'
 import { useCreate, useList, useRemove } from '@/hooks/useResource'
 import { api } from '@/lib/api'
-import type { EvaluationSet, Row } from '@/types'
+import type { DatasetReservation, EvaluationSet, Row } from '@/types'
 
 const parseList = (v: string) => v.split(',').map((s) => s.trim()).filter(Boolean)
 
 export default function EvaluationSets() {
   const sets = useList<EvaluationSet>('evaluation-sets')
+  const reservations = useList<DatasetReservation>('datasets/reservations', { limit: 200 })
   const create = useCreate<EvaluationSet>('evaluation-sets')
   const remove = useRemove('evaluation-sets')
   const [form, setForm] = useState({
@@ -22,6 +23,7 @@ export default function EvaluationSets() {
     human_verify: '',
     limit: '500',
     sample_ids: '',
+    reservation_id: '',
     seed: '42',
   })
   const [open, setOpen] = useState<number | null>(null)
@@ -35,7 +37,7 @@ export default function EvaluationSets() {
     <>
       <PageHeader
         title="Evaluation Sets"
-        subtitle="Built only from samples reserved at import time; independent from train/test splits"
+        subtitle="Built only from reserved samples; independent from train/validation/test splits"
       />
       <ErrorBox error={create.error} />
 
@@ -49,8 +51,9 @@ export default function EvaluationSets() {
               name: form.name,
               kind: form.kind,
               seed: Number(form.seed),
-              limit: ids.length ? null : Number(form.limit),
+              limit: ids.length || form.reservation_id ? null : Number(form.limit),
               sample_ids: ids.length ? ids : null,
+              reservation_id: form.reservation_id ? Number(form.reservation_id) : null,
               filters: {
                 domains: parseList(form.domains),
                 src_langs: parseList(form.src_langs),
@@ -111,6 +114,7 @@ export default function EvaluationSets() {
           <Field label="Limit (sampled)">
             <Input
               type="number"
+              disabled={Boolean(form.reservation_id)}
               value={form.limit}
               onChange={(e) => setForm({ ...form, limit: e.target.value })}
             />
@@ -121,6 +125,21 @@ export default function EvaluationSets() {
               value={form.sample_ids}
               onChange={(e) => setForm({ ...form, sample_ids: e.target.value })}
             />
+          </Field>
+          <Field label="Dataset reservation (optional)">
+            <Select
+              value={form.reservation_id}
+              onChange={(e) => setForm({ ...form, reservation_id: e.target.value })}
+            >
+              <option value="">all reserved samples</option>
+              {reservations.data
+                ?.filter((reservation) => reservation.status === 'ready')
+                .map((reservation) => (
+                  <option key={reservation.id} value={reservation.id}>
+                    reservation {reservation.id} · dataset {reservation.dataset_id}
+                  </option>
+                ))}
+            </Select>
           </Field>
           <Field label="Seed">
             <Input

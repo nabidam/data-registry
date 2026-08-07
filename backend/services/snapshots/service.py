@@ -6,10 +6,11 @@ import logging
 from datetime import UTC, datetime
 from pathlib import Path
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.config import settings
-from models import DatasetDefinition, Snapshot, SplitDefinition
+from models import DatasetDefinition, DatasetReservation, Snapshot, SplitDefinition
 from services.dataset_builder.builder import BuildContext, context_for_definition
 from storage import get_storage
 from utils.duck import split_bucket_expr
@@ -55,6 +56,15 @@ async def build_snapshot(
     work.mkdir(parents=True, exist_ok=True)
 
     ctx: BuildContext = await context_for_definition(session, definition)
+    reservation_rows = await session.execute(
+        select(DatasetReservation)
+        .where(
+            DatasetReservation.dataset_id == definition.id,
+            DatasetReservation.status == "ready",
+        )
+        .order_by(DatasetReservation.id)
+    )
+    reservations = reservation_rows.scalars().all()
     files: dict[str, dict] = {}
     counts: dict[str, int] = {}
     try:
@@ -77,8 +87,20 @@ async def build_snapshot(
                 "id": definition.id,
                 "name": definition.name,
                 "batch_ids": definition.batch_ids,
+                "batch_rules": definition.batch_rules,
+                "composition_seed": definition.composition_seed,
                 "filters": definition.filters,
             },
+            "reservations": [
+                {
+                    "id": reservation.id,
+                    "selector": reservation.selector,
+                    "seed": reservation.seed,
+                    "contamination_scope": reservation.contamination_scope,
+                    "report": reservation.report,
+                }
+                for reservation in reservations
+            ],
             "split": {
                 "id": split.id if split else None,
                 "name": split.name if split else "default",

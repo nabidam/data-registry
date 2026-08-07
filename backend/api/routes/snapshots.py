@@ -3,8 +3,15 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.errors import BadRequest, NotFound
+from core.locks import lock_allocation_boundary
 from db.session import SessionLocal, get_session
-from models import DatasetDefinition, Snapshot, SnapshotContamination, SplitDefinition
+from models import (
+    DatasetDefinition,
+    DatasetReservation,
+    Snapshot,
+    SnapshotContamination,
+    SplitDefinition,
+)
 from schemas import ContaminationOut, SnapshotIn, SnapshotOut
 from services.snapshots.service import build_snapshot
 
@@ -47,6 +54,17 @@ async def create_snapshot(
         raise NotFound("dataset", payload.dataset_id)
     if payload.split_id and await session.get(SplitDefinition, payload.split_id) is None:
         raise NotFound("split", payload.split_id)
+    await lock_allocation_boundary(session)
+    active_reservation = await session.scalar(
+        select(DatasetReservation.id).where(
+            DatasetReservation.status.in_(["queued", "running"])
+        )
+    )
+    if active_reservation is not None:
+        raise BadRequest(
+            f"dataset reservation {active_reservation} is still running; "
+            "wait until allocation changes are complete"
+        )
 
     snapshot = Snapshot(**payload.model_dump(), status="building")
     session.add(snapshot)

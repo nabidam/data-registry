@@ -81,7 +81,7 @@ class Sample(Base):
     # Set the first time a sample is reserved and never cleared: reservation is
     # permanent, so a sample can never drift back into the trainable pool.
     reserved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    # Set for rows excluded by the import-time contamination pass. Like
+    # Set for rows excluded by an import-time or dataset-level contamination pass. Like
     # reservation, quarantine is permanent so an annotation cannot leak the
     # row back into a later training snapshot.
     quarantined_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -113,7 +113,7 @@ class Annotation(Base, TimestampMixin):
 
 
 class DatasetDefinition(Base, TimestampMixin):
-    """Logical dataset: included batches + filters. Holds no physical data."""
+    """Logical dataset: batch composition plus filters. Holds no physical data."""
 
     __tablename__ = "dataset_definitions"
 
@@ -121,7 +121,54 @@ class DatasetDefinition(Base, TimestampMixin):
     name: Mapped[str] = mapped_column(String(200), unique=True)
     description: Mapped[str | None] = mapped_column(Text)
     batch_ids: Mapped[list] = mapped_column(JSONB, default=list)
+    # Optional additive workflow for deterministic per-batch composition. Empty
+    # keeps the original batch_ids behavior unchanged.
+    batch_rules: Mapped[list] = mapped_column(JSONB, default=list)
+    composition_seed: Mapped[int] = mapped_column(Integer, default=42)
     filters: Mapped[dict] = mapped_column(JSONB, default=dict)
+
+
+class DatasetReservation(Base, TimestampMixin):
+    """One auditable reservation run over a logical dataset composition."""
+
+    __tablename__ = "dataset_reservations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    dataset_id: Mapped[int] = mapped_column(
+        ForeignKey("dataset_definitions.id"), nullable=False
+    )
+    status: Mapped[str] = mapped_column(String(32), default="queued")
+    selector: Mapped[str] = mapped_column(String(32), default="contamination_safe")
+    percent: Mapped[float] = mapped_column(Float, default=1.0)
+    max_samples: Mapped[int] = mapped_column(Integer, default=10_000)
+    target_count: Mapped[int | None] = mapped_column(Integer)
+    seed: Mapped[int] = mapped_column(Integer, default=42)
+    contamination_scope: Mapped[str] = mapped_column(String(32), default="registry")
+    report: Mapped[dict | None] = mapped_column(JSONB)
+    error: Mapped[str | None] = mapped_column(Text)
+
+    __table_args__ = (Index("ix_dataset_reservations_dataset", "dataset_id"),)
+
+
+class DatasetReservationSample(Base):
+    """Generated evaluation metadata for samples selected by a reservation run."""
+
+    __tablename__ = "dataset_reservation_samples"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    reservation_id: Mapped[int] = mapped_column(
+        ForeignKey("dataset_reservations.id"), nullable=False
+    )
+    sample_id: Mapped[int] = mapped_column(ForeignKey("samples.id"), nullable=False)
+    evaluation_split: Mapped[str] = mapped_column(String(16))
+    human_verify: Mapped[bool] = mapped_column(Boolean, default=False)
+    annotations: Mapped[dict | None] = mapped_column(JSONB)
+
+    __table_args__ = (
+        UniqueConstraint("reservation_id", "sample_id"),
+        Index("ix_dataset_reservation_samples_reservation", "reservation_id"),
+        Index("ix_dataset_reservation_samples_sample", "sample_id"),
+    )
 
 
 class SplitDefinition(Base, TimestampMixin):

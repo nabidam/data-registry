@@ -3,7 +3,7 @@
 Nothing is copied or materialized here. A dataset definition is a query over
 the immutable batch Parquet files; only snapshots write files.
 
-Every context is scoped to exactly one allocation and defaults to TRAINABLE, so
+Every training context is scoped to TRAINABLE by default, so
 reserved evaluation, contamination-quarantined, and ignored samples are excluded with no configuration —
 that is what makes builds deterministic. Postgres is the authority on
 allocation; the copy inside the batch Parquet is only the value at ingest time.
@@ -53,13 +53,57 @@ class BuildContext:
         self.con.close()
 
 
+def _composition_relation(
+    source: str,
+    where: str,
+    batch_rules: list[dict] | None,
+    seed: int,
+) -> str:
+    """Resolve stable per-batch membership before allocation is considered."""
+    if not batch_rules:
+        return f"(SELECT s.* FROM {source} s WHERE {where})"
+
+    predicates: list[str] = []
+    for rule in batch_rules:
+        batch_id = int(rule["batch_id"])
+        mode = str(rule.get("mode", "all"))
+        if mode == "all":
+            amount = "TRUE"
+        elif mode == "percent":
+            percent = float(rule["value"])
+            amount = (
+                "_composition_rank <= "
+                f"ceil(_composition_count * {percent} / 100.0)"
+            )
+        elif mode == "count":
+            amount = f"_composition_rank <= {int(rule['value'])}"
+        else:
+            raise ValueError(f"unknown batch composition mode {mode!r}")
+        predicates.append(f"(batch_id = {batch_id} AND {amount})")
+
+    included_ids = ", ".join(str(int(rule["batch_id"])) for rule in batch_rules)
+    selection = " OR ".join(predicates) or "FALSE"
+    return (
+        "(SELECT ranked.* EXCLUDE (_composition_rank, _composition_count) FROM ("
+        "SELECT s.*, "
+        "row_number() OVER (PARTITION BY batch_id ORDER BY "
+        f"hash(sample_id::VARCHAR || '-{int(seed)}'), sample_id) AS _composition_rank, "
+        "count(*) OVER (PARTITION BY batch_id) AS _composition_count "
+        f"FROM {source} s WHERE batch_id IN ({included_ids}) AND {where}"
+        f") ranked WHERE {selection})"
+    )
+
+
 async def make_context(
     session: AsyncSession,
     filters: DatasetFilters,
     batch_ids: list[int] | None = None,
-    allocation: str = Allocation.TRAINABLE,
+    allocation: str | None = Allocation.TRAINABLE,
+    *,
+    batch_rules: list[dict] | None = None,
+    composition_seed: int = 42,
 ) -> BuildContext:
-    """Build a context restricted to one allocation.
+    """Build a context optionally restricted to one allocation.
 
     TRAINABLE is expressed as an anti join against everything else (the small
     side is the reserved + ignored pool); any other allocation is a semi join
@@ -69,15 +113,19 @@ async def make_context(
     con = connect()
     src = parquet_source(uris)
     where = filters.where_sql()
+    composition = _composition_relation(src, where, batch_rules, composition_seed)
+    if allocation is None:
+        return BuildContext(con, composition)
+
     trainable = allocation == Allocation.TRAINABLE
 
     ids = await _sample_ids(session, batch_ids, allocation=allocation, equal=not trainable)
     con.register("allocation_ids", ids)
     join = "ANTI JOIN" if trainable else "SEMI JOIN"
     relation = (
-        f"(SELECT s.* FROM {src} s "
+        f"(SELECT s.* FROM {composition} s "
         f"{join} allocation_ids a ON a.sample_id = s.sample_id "
-        f"WHERE {where})"
+        ")"
     )
     return BuildContext(con, relation)
 
@@ -85,10 +133,38 @@ async def make_context(
 async def context_for_definition(
     session: AsyncSession,
     definition: DatasetDefinition,
-    allocation: str = Allocation.TRAINABLE,
+    allocation: str | None = Allocation.TRAINABLE,
 ) -> BuildContext:
     filters = DatasetFilters(**(definition.filters or {}))
-    return await make_context(session, filters, definition.batch_ids or None, allocation)
+    rules = list(definition.batch_rules or [])
+    batch_ids = [int(rule["batch_id"]) for rule in rules] if rules else definition.batch_ids or None
+    return await make_context(
+        session,
+        filters,
+        batch_ids,
+        allocation,
+        batch_rules=rules,
+        composition_seed=definition.composition_seed,
+    )
+
+
+async def allocation_counts(
+    session: AsyncSession, definition: DatasetDefinition
+) -> dict[str, int]:
+    """Count fixed composition membership by current global allocation."""
+    counts: dict[str, int] = {}
+    total_ctx = await context_for_definition(session, definition, None)
+    try:
+        counts["composed"] = count_rows(total_ctx)
+    finally:
+        total_ctx.close()
+    for allocation in Allocation:
+        ctx = await context_for_definition(session, definition, allocation)
+        try:
+            counts[str(allocation).lower()] = count_rows(ctx)
+        finally:
+            ctx.close()
+    return counts
 
 
 def count_rows(ctx: BuildContext) -> int:
