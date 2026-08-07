@@ -53,6 +53,7 @@ services:
       - "8001:8000"
     volumes:
       - ./backend:/app
+      - backendvenv:/app/.venv
       - ${HOST_HF_CACHE_DIR:-${HOME}/.cache/huggingface}:/root/.cache/huggingface
     restart: unless-stopped
     healthcheck:
@@ -95,6 +96,7 @@ services:
       DEBUG: "${DEBUG:-false}"
     volumes:
       - ./backend:/app
+      - backendvenv:/app/.venv
       - ${HOST_HF_CACHE_DIR:-${HOME}/.cache/huggingface}:/root/.cache/huggingface
       - importwork:/tmp/mtreg
     restart: unless-stopped
@@ -130,3 +132,4 @@ services:
 volumes:
   miniodata:
   importwork:
+  backendvenv:
