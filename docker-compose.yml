@@ -63,6 +63,13 @@ services:
     depends_on:
       minio:
         condition: service_healthy
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: ${GPU_COUNT:-1}
+              capabilities: [gpu]
 
   worker:
     build:
@@ -98,6 +105,13 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: ${GPU_COUNT:-1}
+              capabilities: [gpu]
 
   frontend:
     build: ./frontend
