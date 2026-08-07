@@ -321,11 +321,13 @@ export default function Imports() {
               onChange={(e) => setForm({ ...form, evaluation_selector: e.target.value })}
             >
               <option value="">{defaults.data?.evaluation_selector ?? 'default'}</option>
-              {defaults.data?.selectors.map((name) => (
-                <option key={name} value={name}>
-                  {name}
-                </option>
-              ))}
+              {defaults.data?.selectors
+                .filter((name) => name !== defaults.data?.evaluation_selector)
+                .map((name) => (
+                  <option key={name} value={name}>
+                    {name}
+                  </option>
+                ))}
             </Select>
           </Field>
           {effectiveSelector === 'contamination_safe' && (
