@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -114,7 +115,20 @@ class S3Storage(Storage):
         self.client.delete_object(Bucket=self.bucket, Key=key.lstrip("/"))
 
     def configure_duckdb(self, con: duckdb.DuckDBPyConnection) -> None:
-        con.execute("INSTALL httpfs; LOAD httpfs;")
+        # DuckDB's httpfs extension parses the process's HTTP(S)_PROXY env vars as
+        # soon as INSTALL/LOAD httpfs runs. Corporate proxies (often
+        # `user:pass@host`) are not parseable by httpfs and abort every
+        # connection, even to internal MinIO. Hide those vars precisely around
+        # extension load, then restore them so boto3 (and anything else) still
+        # sees the original proxy for public S3/GCS.
+        proxy_keys = ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY")
+        saved_proxy = {k: os.environ[k] for k in proxy_keys if k in os.environ}
+        for k in proxy_keys:
+            os.environ.pop(k, None)
+        try:
+            con.execute("INSTALL httpfs; LOAD httpfs;")
+        finally:
+            os.environ.update(saved_proxy)
         con.execute(f"SET s3_region='{self.region}';")
         con.execute(f"SET s3_access_key_id='{self.access_key}';")
         con.execute(f"SET s3_secret_access_key='{self.secret_key}';")
