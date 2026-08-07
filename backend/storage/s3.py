@@ -116,7 +116,7 @@ class S3Storage(Storage):
 
     def configure_duckdb(self, con: duckdb.DuckDBPyConnection) -> None:
         # DuckDB's httpfs extension parses the process's HTTP(S)_PROXY env vars as
-        # soon as INSTALL/LOAD httpfs runs. Corporate proxies (often
+        # soon as LOAD httpfs runs. Corporate proxies (often
         # `user:pass@host`) are not parseable by httpfs and abort every
         # connection, even to internal MinIO. Hide those vars precisely around
         # extension load, then restore them so boto3 (and anything else) still
@@ -126,7 +126,11 @@ class S3Storage(Storage):
         for k in proxy_keys:
             os.environ.pop(k, None)
         try:
-            con.execute("INSTALL httpfs; LOAD httpfs;")
+            # httpfs is installed into the image at build time. INSTALL checks
+            # the remote extension repository even when the extension is already
+            # present, so doing it per connection makes every DuckDB-backed API
+            # request depend on extensions.duckdb.org being available.
+            con.execute("LOAD httpfs;")
         finally:
             os.environ.update(saved_proxy)
         con.execute(f"SET s3_region='{self.region}';")
