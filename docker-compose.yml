@@ -52,6 +52,7 @@ services:
       # 8001 on the host to stay clear of other local services on 8000
       - "8001:8000"
     volumes:
+      - ./backend:/app
       - ${HOST_HF_CACHE_DIR:-${HOME}/.cache/huggingface}:/root/.cache/huggingface
     restart: unless-stopped
     healthcheck:
@@ -93,6 +94,7 @@ services:
       HF_HOME: /root/.cache/huggingface
       DEBUG: "${DEBUG:-false}"
     volumes:
+      - ./backend:/app
       - ${HOST_HF_CACHE_DIR:-${HOME}/.cache/huggingface}:/root/.cache/huggingface
       - importwork:/tmp/mtreg
     restart: unless-stopped
@@ -119,6 +121,9 @@ services:
       VITE_API_URL: /api
     ports:
       - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
     depends_on:
       - backend
 
