@@ -936,6 +936,7 @@ def select(
     progress: SelectionProgress | None = None,
 ) -> SelectionResult:
     """Run every source-pipeline stage and translate its outputs to registry state."""
+    log.info("Starting Contamination Safe 'select' process...")
     selection_started = time.perf_counter()
     records = rows.select(
         "sample_id", "source_text", "target_text", "domain", "document_id"
@@ -948,8 +949,10 @@ def select(
     import numpy as np
 
     stage_started = time.perf_counter()
+    log.info(f"Annotating {len(records):,} candidate rows")
     _emit(progress, "annotating", f"Annotating {len(records):,} candidate rows", 0, len(records))
     annotated = _annotate(records, config)
+    log.info(f"Annotated {len(records):,} candidate rows")
     _emit(
         progress,
         "annotating",
@@ -962,8 +965,10 @@ def select(
     quarantined: set[int] = set()
     dedup_report: dict[str, int] = {"exact": 0, "minhash": 0, "embedding": 0}
     dedup = config["dedup"]
+    log.info(f"Dedup is {'enabled' if dedup['enabled'] else 'disabled'}")
     if dedup["enabled"]:
         stage_started = time.perf_counter()
+        log.info(f"Exact-deduplicating {len(active):,} candidates")
         _emit(progress, "exact_dedup", f"Exact-deduplicating {len(active):,} candidates")
         active, removed = _dedup_exact(annotated, active)
         quarantined.update(removed)
