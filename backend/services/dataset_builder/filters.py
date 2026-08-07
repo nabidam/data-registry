@@ -1,4 +1,6 @@
-"""Dataset filters, shared by preview, search, statistics and snapshot builds."""
+"""Dataset and evaluation-set filters over the canonical Parquet schema."""
+
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -40,4 +42,21 @@ class DatasetFilters(BaseModel):
         if self.text_contains:
             needle = self.text_contains.replace("'", "''")
             clauses.append(f"(source_text ILIKE '%{needle}%' OR target_text ILIKE '%{needle}%')")
+        return " AND ".join(clauses)
+
+
+class EvaluationSetFilters(DatasetFilters):
+    """Filters that apply only while materializing the reserved evaluation pool."""
+
+    evaluation_splits: list[Literal["dev", "test"]] = []
+    human_verify: bool | None = None
+
+    def where_sql(self) -> str:
+        clauses = [super().where_sql()]
+        if self.evaluation_splits:
+            clauses.append(
+                f"evaluation_split IN ({_sql_str_list(self.evaluation_splits)})"
+            )
+        if self.human_verify is not None:
+            clauses.append(f"human_verify IS {'TRUE' if self.human_verify else 'FALSE'}")
         return " AND ".join(clauses)

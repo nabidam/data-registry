@@ -18,6 +18,8 @@ export default function EvaluationSets() {
     kind: 'sampled',
     domains: '',
     src_langs: '',
+    evaluation_split: '',
+    human_verify: '',
     limit: '500',
     sample_ids: '',
     seed: '42',
@@ -49,7 +51,13 @@ export default function EvaluationSets() {
               seed: Number(form.seed),
               limit: ids.length ? null : Number(form.limit),
               sample_ids: ids.length ? ids : null,
-              filters: { domains: parseList(form.domains), src_langs: parseList(form.src_langs) },
+              filters: {
+                domains: parseList(form.domains),
+                src_langs: parseList(form.src_langs),
+                evaluation_splits: form.evaluation_split ? [form.evaluation_split] : [],
+                human_verify:
+                  form.human_verify === '' ? null : form.human_verify === 'required',
+              },
             })
           }}
         >
@@ -79,6 +87,26 @@ export default function EvaluationSets() {
               value={form.src_langs}
               onChange={(e) => setForm({ ...form, src_langs: e.target.value })}
             />
+          </Field>
+          <Field label="Evaluation split">
+            <Select
+              value={form.evaluation_split}
+              onChange={(e) => setForm({ ...form, evaluation_split: e.target.value })}
+            >
+              <option value="">dev and test</option>
+              <option value="dev">dev only</option>
+              <option value="test">test only</option>
+            </Select>
+          </Field>
+          <Field label="Human verification">
+            <Select
+              value={form.human_verify}
+              onChange={(e) => setForm({ ...form, human_verify: e.target.value })}
+            >
+              <option value="">any status</option>
+              <option value="required">required only</option>
+              <option value="not-required">not required</option>
+            </Select>
           </Field>
           <Field label="Limit (sampled)">
             <Input
@@ -149,6 +177,12 @@ export default function EvaluationSets() {
               { key: 'source_text', header: 'Source' },
               { key: 'target_text', header: 'Target' },
               { key: 'domain', header: 'Domain' },
+              { key: 'evaluation_split', header: 'Split' },
+              {
+                key: 'human_verify',
+                header: 'Human verify',
+                render: (row) => (row.human_verify === true ? 'yes' : '—'),
+              },
             ]}
           />
         </Card>

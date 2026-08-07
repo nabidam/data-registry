@@ -106,8 +106,8 @@ Reserved per import: `min(rows × EVALUATION_PERCENT / 100, EVALUATION_MAX_SAMPL
 | `EVALUATION_SELECTOR`    | `contamination_safe` | selection strategy              |
 | `RANDOM_SEED`            | `42`        | makes selection reproducible               |
 
-Selection is **not** random by default. `contamination_safe` ports the supplied test-set builder's
-full pipeline: feature annotation (source length, math, numbers/units, acronyms, mixed script, and
+Selection is **not** random by default. `contamination_safe` adapts the supplied test-set builder's
+pipeline stages: feature annotation (source length, math, numbers/units, acronyms, mixed script, and
 rare terms); exact, MinHash, and embedding deduplication; domain × source-length quotas;
 flattened or proportional domain allocation; candidate-document restriction; k-center diversity
 selection; hard-phenomenon top-ups; document holdout; and a cross-document embedding purge. The
@@ -120,10 +120,16 @@ actual expensive selector input is at most the requested evaluation size multipl
 `EVALUATION_CANDIDATE_MULTIPLIER` (default 10), capped by that reservoir. Selecting 1,000 rows
 therefore runs LaBSE over 10,000 candidates rather than all 50,000.
 After selection, the worker streams over **every row in the complete corpus** and quarantines rows
-from selected documents and exact evaluation duplicates. Plausible semantic near-duplicates are
-prefiltered by shared token shingles and then verified with LaBSE cosine similarity. This avoids
-running a transformer over millions of unrelated rows while retaining semantic verification for
-likely near duplicates.
+from selected documents and exact evaluation duplicates. A row becomes a semantic-verification
+candidate when its source or target shares at least two normalized three-token shingles with the
+corresponding side of the reserved evaluation pool. Candidate source text is then verified with
+LaBSE cosine similarity before quarantine. This catches a shared four-token passage or separated
+phrase overlap that the previous five-token gate missed, without admitting every row containing one
+generic trigram. LaBSE—not lexical overlap—makes the quarantine decision. A semantic rewrite
+without enough shared phrasing can still evade this scalable prefilter; use a stricter offline audit
+when that residual risk is unacceptable. Deployments can set
+`contamination.semantic_prefilter_min_shared_shingles: 1` for maximum lexical recall at the cost of
+more LaBSE work, especially for short or repetitive text.
 
 Its policy lives in `backend/config/evaluation_reservation.yaml`; set
 `EVALUATION_RESERVATION_CONFIG` to a deployment copy. The import target still comes from

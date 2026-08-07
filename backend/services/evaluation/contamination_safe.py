@@ -65,7 +65,8 @@ class ContaminationReference:
     source_keys: set[str]
     document_ids: set[str]
     embeddings: Any
-    near_duplicate_shingles: set[str]
+    source_prefilter_shingles: set[str]
+    target_prefilter_shingles: set[str]
     encoder: Any = None
 
 
@@ -418,7 +419,9 @@ def prepare_contamination_reference(
     progress: SelectionProgress | None = None,
 ) -> ContaminationReference:
     """Prepare reserved rows for streaming checks against the complete corpus."""
-    records = selected_rows.select("sample_id", "source_text", "document_id").to_dicts()
+    records = selected_rows.select(
+        "sample_id", "source_text", "target_text", "document_id"
+    ).to_dicts()
     separator = str(config.get("input", {}).get("id_separator", ":"))
     selected_ids = {int(record["sample_id"]) for record in records}
     source_keys = {" ".join(_tokens(str(record["source_text"]))) for record in records}
@@ -427,15 +430,21 @@ def prepare_contamination_reference(
         if config["contamination"]["document_level_holdout"]
         else set()
     )
-    texts = [str(record["source_text"]) for record in records]
-    prefilter_size = int(config["contamination"].get("semantic_prefilter_shingle_size", 5))
-    near_duplicate_shingles = {
-        shingle for text in texts for shingle in _shingles(text, prefilter_size)
+    source_texts = [str(record["source_text"]) for record in records]
+    target_texts = [str(record["target_text"]) for record in records]
+    prefilter_size = max(
+        1, int(config["contamination"].get("semantic_prefilter_shingle_size", 3))
+    )
+    source_prefilter_shingles = {
+        shingle for text in source_texts for shingle in _shingles(text, prefilter_size)
+    }
+    target_prefilter_shingles = {
+        shingle for text in target_texts for shingle in _shingles(text, prefilter_size)
     }
 
     if config["embeddings"]["enabled"]:
         embeddings = _encode_labse(
-            texts,
+            source_texts,
             config,
             progress,
             stage="reference_embeddings",
@@ -445,14 +454,15 @@ def prepare_contamination_reference(
         from sklearn.feature_extraction.text import TfidfVectorizer
 
         encoder = TfidfVectorizer(analyzer="char_wb", ngram_range=(2, 4), max_features=50_000)
-        embeddings = encoder.fit_transform(texts)
+        embeddings = encoder.fit_transform(source_texts)
 
     return ContaminationReference(
         selected_ids=selected_ids,
         source_keys=source_keys,
         document_ids=document_ids,
         embeddings=embeddings,
-        near_duplicate_shingles=near_duplicate_shingles,
+        source_prefilter_shingles=source_prefilter_shingles,
+        target_prefilter_shingles=target_prefilter_shingles,
         encoder=encoder,
     )
 
@@ -466,24 +476,34 @@ def scan_full_corpus_contamination(
     """Find train/evaluation leakage in one bounded frame.
 
     Every source row is checked for selected-document membership and exact
-    source duplication. Rows sharing a lexical shingle with reserved text are
-    then verified by embedding similarity. Memory stays proportional to one
+    source duplication. Rows whose source or target meets the configured shared-
+    shingle minimum against the corresponding side of the reserved pool are then
+    verified by source embedding similarity. Memory stays proportional to one
     ingestion frame and the selected set.
     """
     import numpy as np
 
-    records = rows.select("sample_id", "source_text", "document_id").to_dicts()
+    records = rows.select(
+        "sample_id", "source_text", "target_text", "document_id"
+    ).to_dicts()
     separator = str(config.get("input", {}).get("id_separator", ":"))
     contamination = config["contamination"]
     contaminated: set[int] = set()
     candidates: list[dict[str, Any]] = []
-    prefilter_size = int(contamination.get("semantic_prefilter_shingle_size", 5))
+    prefilter_size = max(
+        1, int(contamination.get("semantic_prefilter_shingle_size", 3))
+    )
+    prefilter_minimum = max(
+        1, int(contamination.get("semantic_prefilter_min_shared_shingles", 2))
+    )
     started = time.perf_counter()
     log.info(
-        "Full corpus scan: checking %s rows against %s selected; prefilter shingle size %s",
+        "Full corpus scan: checking %s rows against %s selected; "
+        "prefilter shingle size %s, minimum shared %s",
         len(records),
         len(reference.selected_ids),
         prefilter_size,
+        prefilter_minimum,
     )
     for position, record in enumerate(records, start=1):
         sample_id = int(record["sample_id"])
@@ -495,14 +515,21 @@ def scan_full_corpus_contamination(
             or _document_id(record, separator) in reference.document_ids
         ):
             contaminated.add(sample_id)
-        elif (
-            _shingles(str(record["source_text"]), prefilter_size)
-            & reference.near_duplicate_shingles
-        ):
-            candidates.append(record)
+        else:
+            source_candidate = len(
+                _shingles(str(record["source_text"]), prefilter_size)
+                & reference.source_prefilter_shingles
+            ) >= prefilter_minimum
+            target_candidate = len(
+                _shingles(str(record["target_text"]), prefilter_size)
+                & reference.target_prefilter_shingles
+            ) >= prefilter_minimum
+            if source_candidate or target_candidate:
+                candidates.append(record)
         if position % 5_000 == 0 or position == len(records):
             log.info(
-                "Full corpus scan: prefiltered %s/%s rows; %s contaminated, %s semantic candidates",
+                "Full corpus scan: prefiltered %s/%s rows; "
+                "%s contaminated, %s semantic candidates",
                 position,
                 len(records),
                 len(contaminated),

@@ -104,6 +104,11 @@ export type Filters = {
   text_contains?: string | null
 }
 
+export type EvaluationSetFilters = Filters & {
+  evaluation_splits?: Array<'dev' | 'test'>
+  human_verify?: boolean | null
+}
+
 export type Dataset = {
   id: number
   name: string

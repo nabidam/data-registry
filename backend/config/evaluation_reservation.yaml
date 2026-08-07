@@ -57,10 +57,12 @@ contamination:
   document_level_holdout: true
   near_dup_check_enabled: true
   near_dup_cosine_threshold: 0.92
-  # Full-corpus LaBSE inference is limited to rows sharing a lexical shingle
-  # with a selected evaluation row. At this high cosine threshold, that keeps
-  # semantic verification focused on plausible near duplicates.
-  semantic_prefilter_shingle_size: 5
+  # Full-corpus LaBSE inference is limited to rows whose source or target shares
+  # enough token shingles with the corresponding side of the reserved evaluation
+  # pool. Two shared three-token shingles catch four-token passages and separated
+  # overlap while avoiding a flood of candidates from one generic phrase.
+  semantic_prefilter_shingle_size: 3
+  semantic_prefilter_min_shared_shingles: 2
 
 splits:
   dev_test_split: true

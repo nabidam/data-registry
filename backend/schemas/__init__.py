@@ -6,10 +6,10 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict
 
 from core.allocation import Allocation
-from services.dataset_builder.filters import DatasetFilters
+from services.dataset_builder.filters import DatasetFilters, EvaluationSetFilters
 from services.ingestion.normalize import ColumnMapping
 
-__all__ = ["Allocation", "ColumnMapping", "DatasetFilters"]
+__all__ = ["Allocation", "ColumnMapping", "DatasetFilters", "EvaluationSetFilters"]
 
 
 class ORMModel(BaseModel):
@@ -171,7 +171,7 @@ class EvaluationSetIn(BaseModel):
     name: str
     description: str | None = None
     kind: str = "sampled"
-    filters: DatasetFilters = DatasetFilters()
+    filters: EvaluationSetFilters = EvaluationSetFilters()
     sample_ids: list[int] | None = None
     limit: int | None = None
     seed: int = 42

@@ -2,8 +2,8 @@
 
 ## Decision
 
-Imports using `contamination_safe` run the complete reservation pipeline from
-`build_test_set.py`: feature annotation; exact, MinHash, and embedding deduplication; LaBSE
+Imports using `contamination_safe` adapt the reservation stages from `build_test_set.py`: feature
+annotation; exact, MinHash, and embedding deduplication; LaBSE
 embeddings; domain and length quotas; candidate-document restriction; k-center selection;
 hard-phenomena top-ups; document holdout; cross-document embedding purge; stratified dev/test
 assignment; gold-subset flagging; and batch reporting.
@@ -44,9 +44,15 @@ bounded-dimensional projection. The document cap is ignored when document IDs ar
 synthetic per-row document IDs must not reduce the requested evaluation-set size.
 
 The contamination decision is not bounded to the selection reservoir. After selection, every
-normalized shard is streamed through selected-document and exact-source checks. Rows sharing a
-configured token shingle with selected evaluation text are then semantically verified with LaBSE;
-this lexical prefilter avoids infeasible transformer inference over millions of unrelated rows.
-This second pass is required before the batch can become `ready`; rows it finds are permanently
-`QUARANTINED`. The batch report records effective candidate size, selection timings, full-corpus
-quarantine counts, and the number of rows receiving semantic verification.
+normalized shard is streamed through selected-document and exact-source checks. A row becomes a
+semantic-verification candidate when its source or target shares at least two normalized three-token
+shingles with the corresponding side of the reserved evaluation pool. This admits shared four-token
+passages and separated phrase overlap that the previous source-only five-token gate missed, while
+avoiding a candidate flood from one generic trigram. Its source text is then semantically verified
+with LaBSE. Retaining LaBSE as the final decision prevents phrase overlap from directly causing
+quarantine. The lexical gate avoids infeasible transformer inference over millions of unrelated
+rows, but does not promise to find semantic rewrites without enough shared phrasing. This second
+pass is required before the batch can become `ready`; rows it finds are permanently `QUARANTINED`.
+The batch report records effective candidate size, selection timings, full-corpus quarantine counts,
+and the number of rows receiving semantic verification. Operators may lower the minimum shared
+shingles to one when recall matters more than the resulting LaBSE workload.

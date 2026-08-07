@@ -15,7 +15,7 @@ from core.allocation import Allocation
 from core.config import settings
 from models import EvaluationSet
 from services.dataset_builder.builder import make_context
-from services.dataset_builder.filters import DatasetFilters
+from services.dataset_builder.filters import EvaluationSetFilters
 from storage import get_storage
 
 
@@ -23,7 +23,7 @@ async def build_evaluation_set(
     session: AsyncSession,
     eval_set: EvaluationSet,
     *,
-    filters: DatasetFilters | None = None,
+    filters: EvaluationSetFilters | None = None,
     sample_ids: list[int] | None = None,
     limit: int | None = None,
     seed: int = 42,
@@ -40,7 +40,7 @@ evaluation examples.
     local = work / "data.parquet"
 
     ctx = await make_context(
-        session, filters or DatasetFilters(), None, Allocation.RESERVED_EVALUATION
+        session, filters or EvaluationSetFilters(), None, Allocation.RESERVED_EVALUATION
     )
     try:
         where = "TRUE"
