@@ -88,6 +88,7 @@ def _emit(
     total: int | None = None,
     elapsed: float | None = None,
 ) -> None:
+    log.info("[%s] %s", stage, message)
     if progress:
         progress(stage, message, completed, total, elapsed)
 
@@ -117,7 +118,7 @@ def _document_id(row: dict[str, Any], separator: str) -> str:
 
 
 def _bucket(token_count: int, edges: list[int]) -> str:
-    for low, high in zip(edges, edges[1:], strict=True):
+    for low, high in zip(edges[:-1], edges[1:], strict=True):
         if low <= token_count < high:
             return f"len_{low}_{high}"
     return f"len_{edges[-2]}_{edges[-1]}"
@@ -218,6 +219,7 @@ def _dedup_minhash(
     kept: list[int] = []
     dropped: set[int] = set()
     started = time.perf_counter()
+    log.info("MinHash dedup: checking %s candidates (threshold=%s)", len(indexes), threshold)
     for position, index in enumerate(indexes, start=1):
         signature = MinHash(num_perm=128)
         for shingle in _shingles(rows[index].source):
@@ -228,6 +230,12 @@ def _dedup_minhash(
             lsh.insert(str(index), signature)
             kept.append(index)
         if position % 1_000 == 0 or position == len(indexes):
+            log.info(
+                "MinHash dedup: checked %s/%s candidates; dropped %s",
+                position,
+                len(indexes),
+                len(dropped),
+            )
             _emit(
                 progress,
                 "minhash_dedup",
@@ -302,6 +310,7 @@ def _encode_labse(
 
     started = time.perf_counter()
     model_name = str(config["embeddings"]["model"])
+    log.info("LaBSE[%s]: encoding %s texts", stage, len(texts))
     _emit(progress, stage, f"Loading LaBSE model {model_name}", 0, len(texts), 0.0)
     model = _embedding_model(config)
     batch_size = int(config["embeddings"]["batch_size"])
@@ -332,6 +341,7 @@ def _encode_labse(
                 dtype=np.float32,
             )
         )
+        log.info("LaBSE[%s]: encoded %s/%s rows", stage, stop, len(texts))
         _emit(
             progress,
             stage,
@@ -365,6 +375,7 @@ def _compute_embeddings(
             try:
                 if json.loads(metadata.read_text())["data_hash"] == digest:
                     embeddings = np.load(cache)
+                    log.info("Embeddings: cache hit, loaded %s from %s", len(texts), cache)
                     _emit(
                         progress,
                         "labse_embeddings",
@@ -379,8 +390,10 @@ def _compute_embeddings(
 
     embedding_config = config["embeddings"]
     if embedding_config["enabled"]:
+        log.info("Embeddings: computing LaBSE for %s rows (no cache hit)", len(texts))
         embeddings = _encode_labse(texts, config, progress)
     else:
+        log.info("Embeddings: computing TF-IDF for %s rows", len(texts))
         _emit(progress, "tfidf_embeddings", f"Computing TF-IDF for {len(texts):,} rows")
         embeddings = _tfidf_embeddings(texts)
         _emit(
@@ -395,6 +408,7 @@ def _compute_embeddings(
         cache.parent.mkdir(parents=True, exist_ok=True)
         np.save(cache, embeddings)
         cache.with_suffix(".json").write_text(json.dumps({"data_hash": digest}))
+        log.info("Embeddings: wrote %s embeddings to cache %s", len(texts), cache)
     return embeddings
 
 
@@ -465,6 +479,12 @@ def scan_full_corpus_contamination(
     candidates: list[dict[str, Any]] = []
     prefilter_size = int(contamination.get("semantic_prefilter_shingle_size", 5))
     started = time.perf_counter()
+    log.info(
+        "Full corpus scan: checking %s rows against %s selected; prefilter shingle size %s",
+        len(records),
+        len(reference.selected_ids),
+        prefilter_size,
+    )
     for position, record in enumerate(records, start=1):
         sample_id = int(record["sample_id"])
         if sample_id in reference.selected_ids:
@@ -481,6 +501,13 @@ def scan_full_corpus_contamination(
         ):
             candidates.append(record)
         if position % 5_000 == 0 or position == len(records):
+            log.info(
+                "Full corpus scan: prefiltered %s/%s rows; %s contaminated, %s semantic candidates",
+                position,
+                len(records),
+                len(contaminated),
+                len(candidates),
+            )
             _emit(
                 progress,
                 "full_corpus_prefilter",
@@ -576,6 +603,7 @@ def _dedup_embeddings(
 
     started = time.perf_counter()
     band_count = 12
+    log.info("Embedding dedup: checking %s candidates (threshold=%s)", len(indexes), threshold)
     bits_per_band = 12
     rng = np.random.default_rng(seed)
     projections = rng.standard_normal(
@@ -606,6 +634,12 @@ def _dedup_embeddings(
 
         completed = position + 1
         if completed % 1_000 == 0 or completed == len(indexes):
+            if completed == len(indexes):
+                log.info(
+                    "Embedding dedup: finished %s candidates; removed %s",
+                    len(indexes),
+                    len(dropped_positions),
+                )
             _emit(
                 progress,
                 "embedding_dedup",
@@ -634,6 +668,7 @@ def _candidate_documents(
     maximum = config["selection"].get("max_test_documents")
     if not maximum:
         return indexes
+    log.info("Candidate documents: cap %s applied to %s indexes", maximum, len(indexes))
     # Missing document IDs are represented as one synthetic document per row.
     # A document cap must not turn a requested 1,000-row evaluation set into
     # only 30 rows when the import did not provide document metadata.
@@ -718,7 +753,7 @@ def _quotas(rows: list[_Row], total: int, config: dict[str, Any]) -> dict[tuple[
     targets = _domain_targets(rows, total, config)
     shares = [float(value) for value in config["selection"]["length_bucket_shares"]]
     edges = config["selection"]["length_buckets"]
-    labels = [f"len_{low}_{high}" for low, high in zip(edges, edges[1:], strict=True)]
+    labels = [f"len_{low}_{high}" for low, high in zip(edges[:-1], edges[1:], strict=True)]
     quota: dict[tuple[str, str], int] = {}
     for domain, target in targets.items():
         available = Counter(row.length_bucket for row in rows if row.domain == domain)
@@ -757,6 +792,7 @@ def _kcenter(
         return indexes
     started = time.perf_counter()
     embeddings = np.vstack([vectors[index] for index in indexes])
+    log.info("k-center '%s': selecting %s from %s", label, count, len(indexes))
     if dimensions > 0 and embeddings.shape[1] > dimensions:
         projection_rng = np.random.default_rng(rng.randrange(2**32))
         projection = projection_rng.standard_normal(
@@ -795,6 +831,7 @@ def _select(
     progress: SelectionProgress | None = None,
 ) -> tuple[list[int], dict[tuple[str, str], int]]:
     quotas = _quotas([rows[index] for index in candidates], total, config)
+    log.info("Selection: computed %s domain/bucket quotas for total %s", len(quotas), total)
     selected: list[int] = []
     for (domain, bucket), quota in quotas.items():
         cell = [
@@ -834,6 +871,9 @@ def _top_up_hard_phenomena(
     shares["is_rare_term"] = config["selection"]["rare_term_min_share"]
     chosen = set(selected)
     started = time.perf_counter()
+    log.info(
+        "Hard-phenomena top-up: selected=%s, flags=%s", len(chosen), ", ".join(shares)
+    )
     for flag, share in shares.items():
         required = math.ceil(float(share) * total)
         current = sum(rows[index].flags[flag] for index in chosen)
@@ -875,6 +915,9 @@ def _top_up_hard_phenomena(
             ]
             chosen.difference_update(removable)
             chosen.update(incoming)
+        log.info(
+            "Top-up %s: required=%s had=%s replaced=%s", flag, required, current, replacement_count
+        )
         _emit(
             progress,
             "hard_phenomena_topup",
@@ -1079,6 +1122,7 @@ def select(
         threshold = float(contamination["near_dup_cosine_threshold"])
         pool = [index for index in active if index not in selected_set and index not in quarantined]
         selected_embeddings = np.vstack([vectors[index] for index in selected_set])
+        log.info("Candidate scan: %s pool rows vs %s selected (threshold=%s)", len(pool), len(selected_set), threshold)
         for start in range(0, len(pool), 2048):
             block = pool[start : start + 2048]
             similarities = np.vstack([vectors[index] for index in block]) @ selected_embeddings.T
@@ -1101,6 +1145,13 @@ def select(
 
     dev = _split_dev_test(annotated, selected, config, rng)
     gold = _gold_subset(annotated, selected, config, rng)
+    log.info(
+        "Selection done: reserved=%s quarantined=%s dev=%s gold=%s",
+        len(selected_set),
+        len(quarantined),
+        len(dev),
+        len(gold),
+    )
     flags = {
         flag: sum(annotated[index].flags[flag] for index in selected_set)
         for flag in (
