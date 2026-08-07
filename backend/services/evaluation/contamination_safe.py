@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import random
 import re
@@ -26,6 +27,7 @@ import polars as pl
 from core.config import settings
 
 SelectionProgress = Callable[[str, str, int | None, int | None, float | None], None]
+log = logging.getLogger(__name__)
 
 TOKEN_RE = re.compile(r"\w+", re.UNICODE)
 MATH_RE = re.compile(
@@ -338,7 +340,14 @@ def _encode_labse(
             len(texts),
             time.perf_counter() - started,
         )
-    return np.vstack(chunks) if chunks else np.empty((0, 0), dtype=np.float32)
+    result = np.vstack(chunks) if chunks else np.empty((0, 0), dtype=np.float32)
+    if result.shape[0] != len(texts):
+        log.warning(
+            "LaBSE encoding produced %d embeddings for %d texts",
+            result.shape[0],
+            len(texts),
+        )
+    return result
 
 
 def _compute_embeddings(
@@ -502,6 +511,13 @@ def scan_full_corpus_contamination(
             stage="full_corpus_embeddings",
         )
         selected = reference.embeddings
+        if vectors.shape[0] != len(candidates):
+            log.warning(
+                "LaBSE produced %d embeddings for %d texts; trailing candidates skipped",
+                vectors.shape[0],
+                len(candidates),
+            )
+            candidates = candidates[: vectors.shape[0]]
         for start in range(0, len(candidates), 512):
             similarities = vectors[start : start + 512] @ selected.T
             maximum = similarities.max(axis=1)
@@ -514,6 +530,13 @@ def scan_full_corpus_contamination(
             )
     else:
         vectors = reference.encoder.transform(texts)
+        if vectors.shape[0] != len(candidates):
+            log.warning(
+                "TF-IDF produced %d vectors for %d texts; trailing candidates skipped",
+                vectors.shape[0],
+                len(candidates),
+            )
+            candidates = candidates[: vectors.shape[0]]
         for start in range(0, len(candidates), 512):
             similarities = (vectors[start : start + 512] @ reference.embeddings.T).toarray()
             maximum = np.asarray(similarities.max(axis=1)).ravel()
@@ -968,6 +991,14 @@ def select(
         config,
         progress,
     )
+    if embeddings.shape[0] != len(active):
+        log.warning(
+            "LaBSE produced %d embeddings for %d active rows; "
+            "trailing rows will be excluded from selection",
+            embeddings.shape[0],
+            len(active),
+        )
+        active = active[: embeddings.shape[0]]
     if dedup["enabled"] and dedup["embedding_dedup_enabled"]:
         active, embeddings, removed = _dedup_embeddings(
             active,
