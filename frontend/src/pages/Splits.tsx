@@ -1,14 +1,17 @@
 import { useState } from 'react'
 
 import { DataTable } from '@/components/DataTable'
+import { EditEntity } from '@/components/EditEntity'
 import { Button, Card, ErrorBox, Field, Input, PageHeader, Select } from '@/components/ui'
-import { useCreate, useList } from '@/hooks/useResource'
+import { useCreate, useList, usePatch } from '@/hooks/useResource'
 import type { Dataset, Row, Split } from '@/types'
 
 export default function Splits() {
   const splits = useList<Split>('splits')
   const datasets = useList<Dataset>('datasets', { limit: 200 })
   const create = useCreate<Split>('splits')
+  const patch = usePatch<Split>('splits')
+  const [editing, setEditing] = useState<Split | null>(null)
   const [form, setForm] = useState({
     dataset_id: '',
     name: 'default',
@@ -106,6 +109,23 @@ export default function Splits() {
         </form>
       </Card>
 
+      {editing && (
+        <EditEntity
+          title={`Edit split ${editing.name}`}
+          fields={[{ key: 'name', label: 'Name', required: true }]}
+          initial={editing as unknown as Record<string, unknown>}
+          error={patch.error}
+          isSaving={patch.isPending}
+          onClose={() => setEditing(null)}
+          onSave={(values) =>
+            patch.mutate(
+              { id: editing.id, body: { name: values.name } },
+              { onSuccess: () => setEditing(null) },
+            )
+          }
+        />
+      )}
+
       <DataTable
         loading={splits.isLoading}
         rows={splits.data as unknown as Row[]}
@@ -116,6 +136,15 @@ export default function Splits() {
           { key: 'version', header: 'Version' },
           { key: 'seed', header: 'Seed' },
           { key: 'ratios', header: 'Ratios', render: (r) => JSON.stringify(r.ratios) },
+          {
+            key: 'actions',
+            header: '',
+            render: (r) => (
+              <Button variant="ghost" onClick={() => setEditing(r as unknown as Split)}>
+                Edit
+              </Button>
+            ),
+          },
         ]}
       />
     </>

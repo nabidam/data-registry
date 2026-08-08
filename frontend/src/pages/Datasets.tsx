@@ -2,8 +2,9 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 
 import { DataTable } from '@/components/DataTable'
+import { EditEntity } from '@/components/EditEntity'
 import { Badge, Button, Card, ErrorBox, Field, Input, PageHeader, Select } from '@/components/ui'
-import { useCreate, useList, useRemove } from '@/hooks/useResource'
+import { useCreate, useList, usePatch, useRemove } from '@/hooks/useResource'
 import { api } from '@/lib/api'
 import type { Batch, BatchRule, Dataset, DatasetReservation, Row } from '@/types'
 
@@ -27,6 +28,8 @@ export default function Datasets() {
   const batches = useList<Batch>('batches', { limit: 200 })
   const create = useCreate<Dataset>('datasets')
   const remove = useRemove('datasets')
+  const patch = usePatch<Dataset>('datasets')
+  const [editing, setEditing] = useState<Dataset | null>(null)
   const [form, setForm] = useState({
     name: '',
     description: '',
@@ -283,6 +286,38 @@ export default function Datasets() {
         </form>
       </Card>
 
+      {editing && (
+        <EditEntity
+          title={`Edit dataset ${editing.name}`}
+          fields={[
+            { key: 'name', label: 'Name', required: true },
+            { key: 'description', label: 'Description', type: 'textarea' },
+          ]}
+          initial={{ name: editing.name, description: editing.description ?? '' }}
+          error={patch.error}
+          isSaving={patch.isPending}
+          onClose={() => setEditing(null)}
+          onSave={(values) =>
+            patch.mutate(
+              {
+                id: editing.id,
+                // The dataset endpoint replaces the whole definition, so send the
+                // existing composition unchanged and only touch name/description.
+                body: {
+                  name: values.name,
+                  description: values.description || null,
+                  batch_ids: editing.batch_ids,
+                  batch_rules: editing.batch_rules ?? [],
+                  composition_seed: editing.composition_seed,
+                  filters: editing.filters,
+                },
+              },
+              { onSuccess: () => setEditing(null) },
+            )
+          }
+        />
+      )}
+
       <DataTable
         loading={datasets.isLoading}
         rows={datasets.data as unknown as Row[]}
@@ -317,6 +352,9 @@ export default function Datasets() {
             header: '',
             render: (row) => (
               <div className="flex gap-2">
+                <Button variant="ghost" onClick={() => setEditing(row as unknown as Dataset)}>
+                  Edit
+                </Button>
                 <Button variant="ghost" onClick={() => setInspect(row.id as number)}>
                   Inspect
                 </Button>

@@ -32,6 +32,14 @@ export function useCreate<T, B = unknown>(resource: string) {
   })
 }
 
+export function usePatch<T, B = unknown>(resource: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, body }: { id: number; body: B }) => api.patch<T>(`/${resource}/${id}`, body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: [resource] }),
+  })
+}
+
 export function useRemove(resource: string) {
   const qc = useQueryClient()
   return useMutation({

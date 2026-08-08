@@ -1,8 +1,9 @@
 import { useState } from 'react'
 
 import { DataTable } from '@/components/DataTable'
+import { EditEntity } from '@/components/EditEntity'
 import { Button, Card, ErrorBox, Field, Input, PageHeader, Select } from '@/components/ui'
-import { useCreate, useList, useRemove } from '@/hooks/useResource'
+import { useCreate, useList, usePatch, useRemove } from '@/hooks/useResource'
 import type { Experiment, Model, Row } from '@/types'
 
 export default function Models() {
@@ -10,6 +11,8 @@ export default function Models() {
   const experiments = useList<Experiment>('experiments', { limit: 200 })
   const create = useCreate<Model>('models')
   const remove = useRemove('models')
+  const patch = usePatch<Model>('models')
+  const [editing, setEditing] = useState<Model | null>(null)
   const [form, setForm] = useState({
     name: '',
     experiment_id: '',
@@ -89,6 +92,49 @@ export default function Models() {
         </form>
       </Card>
 
+      {editing && (
+        <EditEntity
+          title={`Edit model ${editing.name}`}
+          fields={[
+            { key: 'name', label: 'Name', required: true },
+            { key: 'checkpoint_uri', label: 'Checkpoint URI' },
+            { key: 'metrics', label: 'Metrics JSON ({"bleu": 32.1})', type: 'textarea' },
+            { key: 'notes', label: 'Notes', type: 'textarea' },
+          ]}
+initial={{
+            name: editing.name,
+            checkpoint_uri: editing.checkpoint_uri ?? '',
+            metrics: editing.metrics ? JSON.stringify(editing.metrics) : '',
+            notes: editing.notes ?? '',
+          }}
+          error={patch.error}
+          isSaving={patch.isPending}
+          onClose={() => setEditing(null)}
+          onSave={(values) => {
+            let metrics: Record<string, number> | null = null
+            if (values.metrics.trim()) {
+              try {
+                metrics = JSON.parse(values.metrics)
+              } catch {
+                metrics = null
+              }
+            }
+            patch.mutate(
+              {
+                id: editing.id,
+                body: {
+                  name: values.name,
+                  checkpoint_uri: values.checkpoint_uri || null,
+                  metrics,
+                  notes: values.notes || null,
+                },
+              },
+              { onSuccess: () => setEditing(null) },
+            )
+          }}
+        />
+      )}
+
       <DataTable
         loading={models.isLoading}
         rows={models.data as unknown as Row[]}
@@ -102,9 +148,14 @@ export default function Models() {
             key: 'actions',
             header: '',
             render: (r) => (
-              <Button variant="danger" onClick={() => remove.mutate(r.id as number)}>
-                Delete
-              </Button>
+              <div className="flex gap-2">
+                <Button variant="ghost" onClick={() => setEditing(r as unknown as Model)}>
+                  Edit
+                </Button>
+                <Button variant="danger" onClick={() => remove.mutate(r.id as number)}>
+                  Delete
+                </Button>
+              </div>
             ),
           },
         ]}

@@ -1,9 +1,12 @@
 import { useState } from 'react'
 
 import { DataTable } from '@/components/DataTable'
+import { EditEntity } from '@/components/EditEntity'
 import { Button, Card, ErrorBox, Field, Input, PageHeader, Select } from '@/components/ui'
-import { useCreate, useList, useRemove } from '@/hooks/useResource'
+import { useCreate, useList, usePatch, useRemove } from '@/hooks/useResource'
 import type { Experiment, Row, Snapshot, Split } from '@/types'
+
+const STATUSES = ['planned', 'running', 'done', 'failed']
 
 export default function Experiments() {
   const experiments = useList<Experiment>('experiments')
@@ -11,6 +14,8 @@ export default function Experiments() {
   const splits = useList<Split>('splits', { limit: 200 })
   const create = useCreate<Experiment>('experiments')
   const remove = useRemove('experiments')
+  const patch = usePatch<Experiment>('experiments')
+  const [editing, setEditing] = useState<Experiment | null>(null)
   const [form, setForm] = useState({
     name: '',
     snapshot_id: '',
@@ -84,10 +89,9 @@ export default function Experiments() {
               value={form.status}
               onChange={(e) => setForm({ ...form, status: e.target.value })}
             >
-              <option value="planned">planned</option>
-              <option value="running">running</option>
-              <option value="done">done</option>
-              <option value="failed">failed</option>
+              {STATUSES.map((s) => (
+                <option key={s}>{s}</option>
+              ))}
             </Select>
           </Field>
           <Field label="Notes">
@@ -101,6 +105,36 @@ export default function Experiments() {
           </div>
         </form>
       </Card>
+
+      {editing && (
+        <EditEntity
+          title={`Edit experiment ${editing.name}`}
+          fields={[
+            { key: 'name', label: 'Name', required: true },
+            { key: 'mlflow_run_id', label: 'MLflow run id' },
+            { key: 'status', label: 'Status', type: 'select', options: STATUSES },
+            { key: 'notes', label: 'Notes', type: 'textarea' },
+          ]}
+          initial={editing as unknown as Record<string, unknown>}
+          error={patch.error}
+          isSaving={patch.isPending}
+          onClose={() => setEditing(null)}
+          onSave={(values) =>
+            patch.mutate(
+              {
+                id: editing.id,
+                body: {
+                  name: values.name,
+                  mlflow_run_id: values.mlflow_run_id || null,
+                  status: values.status,
+                  notes: values.notes || null,
+                },
+              },
+              { onSuccess: () => setEditing(null) },
+            )
+          }
+        />
+      )}
 
       <DataTable
         loading={experiments.isLoading}
@@ -116,9 +150,14 @@ export default function Experiments() {
             key: 'actions',
             header: '',
             render: (r) => (
-              <Button variant="danger" onClick={() => remove.mutate(r.id as number)}>
-                Delete
-              </Button>
+              <div className="flex gap-2">
+                <Button variant="ghost" onClick={() => setEditing(r as unknown as Experiment)}>
+                  Edit
+                </Button>
+                <Button variant="danger" onClick={() => remove.mutate(r.id as number)}>
+                  Delete
+                </Button>
+              </div>
             ),
           },
         ]}
