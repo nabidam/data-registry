@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.config import settings
 from core.errors import BadRequest, NotFound
 from db.session import get_session
-from models import Snapshot
+from models import EvaluationSet, Snapshot
 from storage import get_storage
 
 router = APIRouter(prefix="/exports", tags=["exports"])
@@ -36,6 +36,18 @@ EXPORT_COLUMNS = (
     "target_text",
     "meta",
 )
+EVALUATION_EXPORT_COLUMNS = EXPORT_COLUMNS + (
+    "evaluation_split",
+    "human_verify",
+    "n_tokens",
+    "length_bucket",
+    "has_math",
+    "has_numbers_units",
+    "has_acronyms",
+    "has_mixed_script",
+    "is_rare_term",
+    "rare_term_score",
+)
 
 
 def _selected(value: str, allowed: tuple[str, ...], label: str) -> list[str]:
@@ -53,7 +65,13 @@ def _safe_name(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip(".-") or "snapshot"
 
 
-def _copy_as(con: duckdb.DuckDBPyConnection, source: Path, target: Path, columns: list[str], fmt: str) -> None:
+def _copy_as(
+    con: duckdb.DuckDBPyConnection,
+    source: Path,
+    target: Path,
+    columns: list[str],
+    fmt: str,
+) -> None:
     # Column names originate from EXPORT_COLUMNS above, not request SQL.
     projection = ", ".join(columns)
     escaped_source = str(source).replace("'", "''")
@@ -100,6 +118,25 @@ def _write_dataset_card(path: Path, snapshot: Snapshot) -> None:
     )
 
 
+def _write_evaluation_dataset_card(path: Path, evaluation_set: EvaluationSet) -> None:
+    path.write_text(
+        "---\n"
+        "configs:\n"
+        "- config_name: default\n"
+        "  data_files:\n"
+        "  - split: evaluation\n"
+        "    path: data/evaluation-*.parquet\n"
+        "---\n\n"
+        f"# {evaluation_set.name}\n\n"
+        "An immutable Machine Translation Dataset Registry evaluation set packaged "
+        "for the Hugging Face `datasets` library.\n\n"
+        "```python\n"
+        "from datasets import load_dataset\n"
+        "dataset = load_dataset('path/to/extracted-evaluation-set')\n"
+        "```\n"
+    )
+
+
 @router.get("")
 async def list_exports(session: AsyncSession = Depends(get_session)):
     """Every ready snapshot is an export."""
@@ -117,6 +154,113 @@ async def list_exports(session: AsyncSession = Depends(get_session)):
         }
         for s in rows.scalars().all()
     ]
+
+
+@router.get("/evaluation-sets/{set_id}/custom")
+async def custom_evaluation_set_download(
+    set_id: int,
+    background: BackgroundTasks,
+    format: str = "parquet",
+    columns: str = ",".join(EVALUATION_EXPORT_COLUMNS),
+    include_metadata: bool = True,
+    session: AsyncSession = Depends(get_session),
+) -> FileResponse:
+    """Build a non-persistent custom export from an immutable evaluation set."""
+    if format not in EXPORT_FORMATS:
+        raise BadRequest(f"unknown format {format!r}, expected one of {sorted(EXPORT_FORMATS)}")
+    evaluation_set = await session.get(EvaluationSet, set_id)
+    if evaluation_set is None or not evaluation_set.parquet_uri:
+        raise NotFound("evaluation set", set_id)
+
+    selected_columns = _selected(columns, EVALUATION_EXPORT_COLUMNS, "columns")
+    storage = get_storage()
+    work = Path(settings.work_dir) / "downloads" / f"evaluation_custom_{uuid4().hex}"
+    package = work / _safe_name(evaluation_set.name)
+    package.mkdir(parents=True)
+    source = work / "data.parquet"
+    storage.get_file(storage.key_of(evaluation_set.parquet_uri), source)
+    con = duckdb.connect()
+
+    try:
+        if format == "huggingface":
+            data_dir = package / "data"
+            data_dir.mkdir()
+            target = data_dir / "evaluation-00000-of-00001.parquet"
+            _copy_as(con, source, target, selected_columns, "parquet")
+            _write_evaluation_dataset_card(package / "README.md", evaluation_set)
+            include_metadata = True
+        else:
+            extension = {"parquet": "parquet", "csv": "csv", "tsv": "tsv", "jsonl": "jsonl"}[format]
+            _copy_as(con, source, package / f"data.{extension}", selected_columns, format)
+
+        (package / "export.json").write_text(
+            json.dumps(
+                {
+                    "source_evaluation_set": {
+                        "id": evaluation_set.id,
+                        "name": evaluation_set.name,
+                    },
+                    "format": format,
+                    "columns": selected_columns,
+                    "includes_evaluation_set_metadata": include_metadata,
+                },
+                indent=2,
+            )
+        )
+        if include_metadata:
+            (package / "evaluation_set.json").write_text(
+                json.dumps(
+                    {
+                        "id": evaluation_set.id,
+                        "name": evaluation_set.name,
+                        "description": evaluation_set.description,
+                        "kind": evaluation_set.kind,
+                        "sample_count": evaluation_set.sample_count,
+                        "spec": evaluation_set.spec,
+                        "created_at": evaluation_set.created_at.isoformat(),
+                    },
+                    indent=2,
+                )
+            )
+
+        archive_base = work / _safe_name(evaluation_set.name)
+        archive = Path(shutil.make_archive(str(archive_base), "zip", work, package.name))
+    except Exception:
+        shutil.rmtree(work, ignore_errors=True)
+        raise
+    finally:
+        con.close()
+
+    background.add_task(shutil.rmtree, work, ignore_errors=True)
+    return FileResponse(
+        archive,
+        media_type="application/zip",
+        filename=f"{_safe_name(evaluation_set.name)}-{format}.zip",
+        background=background,
+    )
+
+
+@router.get("/evaluation-sets/{set_id}/data")
+async def download_evaluation_set(
+    set_id: int,
+    background: BackgroundTasks,
+    session: AsyncSession = Depends(get_session),
+) -> FileResponse:
+    """Stream the original evaluation-set Parquet file."""
+    evaluation_set = await session.get(EvaluationSet, set_id)
+    if evaluation_set is None or not evaluation_set.parquet_uri:
+        raise NotFound("evaluation set", set_id)
+
+    storage = get_storage()
+    work = Path(settings.work_dir) / "downloads" / f"evaluation_{uuid4().hex}"
+    local = work / "data.parquet"
+    storage.get_file(storage.key_of(evaluation_set.parquet_uri), local)
+    background.add_task(shutil.rmtree, work, ignore_errors=True)
+    return FileResponse(
+        local,
+        filename=f"{_safe_name(evaluation_set.name)}_data.parquet",
+        background=background,
+    )
 
 
 @router.get("/{snapshot_id}/custom")

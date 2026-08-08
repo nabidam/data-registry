@@ -73,7 +73,9 @@ for the backend healthcheck and never runs Alembic itself.
 6. **Splits** — reproducible train/validation/test ratios plus a seed.
 7. **Snapshots** — materialize the remaining `TRAINABLE` composition into
    `train/validation/test.parquet` and
-   `manifest.json` (with row counts and SHA-256 per file).
+   `manifest.json` (with row counts and SHA-256 per file). The Exports page downloads snapshots
+   and materialized evaluation sets either as their original Parquet files or as custom
+   Parquet/CSV/TSV/JSONL/Hugging Face packages with selected columns.
 8. **Experiments / Models** — record training runs and checkpoints, referencing a snapshot
    and an MLflow run id.
 
