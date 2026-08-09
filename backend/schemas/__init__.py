@@ -52,6 +52,39 @@ class BatchOut(ORMModel):
     created_at: datetime
 
 
+class BatchRejectIn(BaseModel):
+    confirm_name: str
+    reason: str = Field(min_length=3, max_length=2_000)
+
+
+class BatchRestoreIn(BaseModel):
+    confirm_name: str
+
+
+class BatchPurgeIn(BaseModel):
+    confirm_name: str
+    reason: str = Field(min_length=10, max_length=2_000)
+
+
+class BatchPurgeImpact(BaseModel):
+    batch_id: int
+    batch_name: str
+    status: str
+    sample_count: int
+    can_purge: bool
+    blockers: list[str]
+    warnings: list[str]
+    storage_prefixes: list[str]
+
+
+class BatchPurgeOut(BaseModel):
+    batch_id: int
+    batch_name: str
+    audit_id: int
+    deleted_samples: int
+    deleted_objects: int
+
+
 # --- samples / annotations -------------------------------------------------
 class SampleOut(ORMModel):
     id: int

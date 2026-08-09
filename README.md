@@ -82,6 +82,16 @@ for the backend healthcheck and never runs Alembic itself.
 Annotations (ignore, tags, comments, quality, review status) never modify the original data;
 they only move a sample's allocation.
 
+### Batch recovery and backups
+
+The Batches page can reject a ready batch, which removes it from future dataset builds without
+deleting its metadata or objects. An administrator can restore it after review. A separate purge
+dry run blocks permanent removal when a dataset, reservation, snapshot, or evaluation set depends
+on the batch.
+
+See [Backup and Batch Recovery](docs/operations/backup-and-batch-recovery.md) for the purge rules,
+the coordinated PostgreSQL and object-storage backup script, and the isolated restore procedure.
+
 ## Allocation
 
 Every sample has exactly one allocation, decided during import:

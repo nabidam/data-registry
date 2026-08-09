@@ -64,6 +64,19 @@ class Batch(Base, TimestampMixin):
     source: Mapped["Source | None"] = relationship(back_populates="batches")
 
 
+class BatchPurgeAudit(Base, TimestampMixin):
+    """Minimal administrative record that a batch was intentionally purged."""
+
+    __tablename__ = "batch_purge_audits"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    batch_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    batch_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+
+    __table_args__ = (Index("ix_batch_purge_audits_batch_id", "batch_id"),)
+
+
 class Sample(Base):
     """Immutable translation-unit metadata. Text lives in the batch Parquet file."""
 

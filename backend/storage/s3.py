@@ -114,6 +114,50 @@ class S3Storage(Storage):
     def delete(self, key: str) -> None:
         self.client.delete_object(Bucket=self.bucket, Key=key.lstrip("/"))
 
+    def delete_prefix(self, prefix: str) -> int:
+        if not prefix.strip("/") or ".." in Path(prefix).parts:
+            raise ValueError("refusing unsafe storage prefix")
+        normalized = prefix.strip("/") + "/"
+        deleted = 0
+
+        def delete_objects(objects: list[dict[str, str]]) -> int:
+            count = 0
+            for start in range(0, len(objects), 1_000):
+                chunk = objects[start : start + 1_000]
+                if not chunk:
+                    continue
+                response = self.client.delete_objects(
+                    Bucket=self.bucket,
+                    Delete={"Objects": chunk, "Quiet": True},
+                )
+                errors = response.get("Errors", [])
+                if errors:
+                    details = ", ".join(
+                        f"{error.get('Key')}: {error.get('Message')}" for error in errors
+                    )
+                    raise RuntimeError(f"could not delete storage objects: {details}")
+                count += len(chunk)
+            return count
+
+        # Listing versions works for versioned and unversioned S3-compatible
+        # buckets. Delete markers count as versions and must be removed too, or
+        # a purge would only hide old corpus objects instead of erasing them.
+        version_paginator = self.client.get_paginator("list_object_versions")
+        for page in version_paginator.paginate(Bucket=self.bucket, Prefix=normalized):
+            versions = [
+                {"Key": item["Key"], "VersionId": item["VersionId"]}
+                for item in [*page.get("Versions", []), *page.get("DeleteMarkers", [])]
+            ]
+            deleted += delete_objects(versions)
+
+        # Some unversioned S3-compatible stores return no Versions entries.
+        # Delete their current objects after the version pass.
+        paginator = self.client.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=self.bucket, Prefix=normalized):
+            current = [{"Key": item["Key"]} for item in page.get("Contents", [])]
+            deleted += delete_objects(current)
+        return deleted
+
     def configure_duckdb(self, con: duckdb.DuckDBPyConnection) -> None:
         # DuckDB's httpfs extension parses the process's HTTP(S)_PROXY env vars as
         # soon as LOAD httpfs runs. Corporate proxies (often

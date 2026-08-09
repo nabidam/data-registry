@@ -1,6 +1,7 @@
 from models.entities import (
     Annotation,
     Batch,
+    BatchPurgeAudit,
     DatasetDefinition,
     DatasetReservation,
     DatasetReservationSample,
@@ -18,6 +19,7 @@ from models.entities import (
 __all__ = [
     "Annotation",
     "Batch",
+    "BatchPurgeAudit",
     "DatasetDefinition",
     "DatasetReservation",
     "DatasetReservationSample",

@@ -48,6 +48,10 @@ class Storage(ABC):
     def delete(self, key: str) -> None: ...
 
     @abstractmethod
+    def delete_prefix(self, prefix: str) -> int:
+        """Delete every object below an explicit key prefix and return the count."""
+
+    @abstractmethod
     def configure_duckdb(self, con: duckdb.DuckDBPyConnection) -> None:
         """Give a DuckDB connection whatever it needs to read our URIs."""
 

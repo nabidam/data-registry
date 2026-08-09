@@ -55,5 +55,19 @@ class LocalStorage(Storage):
     def delete(self, key: str) -> None:
         self._path(key).unlink(missing_ok=True)
 
+    def delete_prefix(self, prefix: str) -> int:
+        parts = Path(prefix).parts
+        if not prefix.strip("/") or ".." in parts:
+            raise ValueError("refusing unsafe storage prefix")
+        target = self._path(prefix)
+        if not target.exists():
+            return 0
+        if target.is_file():
+            target.unlink()
+            return 1
+        count = sum(1 for path in target.rglob("*") if path.is_file())
+        shutil.rmtree(target)
+        return count
+
     def configure_duckdb(self, con: duckdb.DuckDBPyConnection) -> None:
         return None

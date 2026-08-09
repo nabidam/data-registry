@@ -19,6 +19,25 @@ export type Batch = {
   created_at: string
 }
 
+export type BatchPurgeImpact = {
+  batch_id: number
+  batch_name: string
+  status: string
+  sample_count: number
+  can_purge: boolean
+  blockers: string[]
+  warnings: string[]
+  storage_prefixes: string[]
+}
+
+export type BatchPurgeResult = {
+  batch_id: number
+  batch_name: string
+  audit_id: number
+  deleted_samples: number
+  deleted_objects: number
+}
+
 export type ImportProgress = {
   phase?: string
   message?: string
