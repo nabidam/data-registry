@@ -1,9 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
+import { HStack, VStack } from '@astryxdesign/core/Stack'
+import { Grid } from '@astryxdesign/core/Grid'
+import { Heading, Text } from '@astryxdesign/core/Text'
+import { CodeBlock } from '@astryxdesign/core/CodeBlock'
 
 import { DataTable } from '@/components/DataTable'
 import { EditEntity } from '@/components/EditEntity'
-import { Badge, Button, Card, ErrorBox, Field, Input, PageHeader, Select } from '@/components/ui'
+import { Badge, Button, Card, Checkbox, ErrorBox, Field, Input, PageHeader, Select } from '@/components/ui'
 import { useCreate, useList, usePatch, useRemove } from '@/hooks/useResource'
 import { api } from '@/lib/api'
 import type { Batch, BatchRule, Dataset, DatasetReservation, Row } from '@/types'
@@ -92,16 +96,15 @@ export default function Datasets() {
     )
 
   return (
-    <>
+    <VStack gap={4}>
       <PageHeader
         title="Datasets"
         subtitle="Logical, reproducible combinations of immutable batches — no data copied"
       />
       <ErrorBox error={create.error} />
 
-      <Card className="mb-4">
+      <Card>
         <form
-          className="space-y-4"
           onSubmit={(event) => {
             event.preventDefault()
             const batchRules = rules
@@ -126,163 +129,168 @@ export default function Datasets() {
             })
           }}
         >
-          <div className="grid gap-3 md:grid-cols-4">
-            <Field label="Name">
-              <Input
-                required
-                value={form.name}
-                onChange={(event) => setForm({ ...form, name: event.target.value })}
-              />
-            </Field>
-            <Field label="Composition">
-              <Select
-                value={form.mode}
-                onChange={(event) =>
-                  setForm({ ...form, mode: event.target.value as 'whole' | 'custom' })
-                }
-              >
-                <option value="whole">Whole batches</option>
-                <option value="custom">Custom amount per batch</option>
-              </Select>
-            </Field>
-            <Field label="Composition seed">
-              <Input
-                type="number"
-                value={form.composition_seed}
-                onChange={(event) => setForm({ ...form, composition_seed: event.target.value })}
-              />
-            </Field>
-            <Field label="Description">
-              <Input
-                value={form.description}
-                onChange={(event) => setForm({ ...form, description: event.target.value })}
-              />
-            </Field>
-          </div>
-
-          {form.mode === 'whole' ? (
-            <Field
-              label={`Batch ids (available: ${batches.data?.map((batch) => batch.id).join(', ') ?? '—'})`}
-            >
-              <Input
-                placeholder="1,2  (empty keeps the existing all-ready-batches behavior)"
-                value={form.batch_ids}
-                onChange={(event) => setForm({ ...form, batch_ids: event.target.value })}
-              />
-            </Field>
-          ) : (
-            <div className="rounded-md border border-slate-200 bg-slate-50 p-3">
-              <div className="mb-3 flex items-center justify-between">
-                <div>
-                  <h2 className="text-sm font-medium text-slate-800">Batch contributions</h2>
-                  <p className="text-xs text-slate-500">
-                    Percent and count selections are exact and reproducible for the composition seed.
-                  </p>
-                </div>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  onClick={() =>
-                    setRules([...rules, { batch_id: '', mode: 'all', value: '' }])
+          <VStack gap={4}>
+            <Grid columns={4} gap={3}>
+              <Field label="Name">
+                <Input
+                  required
+                  value={form.name}
+                  onChange={(event) => setForm({ ...form, name: event.target.value })}
+                />
+              </Field>
+              <Field label="Composition">
+                <Select
+                  value={form.mode}
+                  onChange={(event) =>
+                    setForm({ ...form, mode: event.target.value as 'whole' | 'custom' })
                   }
                 >
-                  Add batch
-                </Button>
-              </div>
-              <div className="space-y-2">
-                {rules.map((rule, index) => (
-                  <div
-                    key={index}
-                    className="grid items-end gap-2 rounded-md border border-slate-200 bg-white p-2 md:grid-cols-[2fr_1fr_1fr_auto]"
-                  >
-                    <Field label="Batch">
-                      <Select
-                        required
-                        value={rule.batch_id}
-                        onChange={(event) => setRule(index, { batch_id: event.target.value })}
-                      >
-                        <option value="">select…</option>
-                        {batches.data?.map((batch) => (
-                          <option key={batch.id} value={batch.id}>
-                            {batch.name} · {batch.sample_count.toLocaleString()} rows
-                          </option>
-                        ))}
-                      </Select>
-                    </Field>
-                    <Field label="Amount">
-                      <Select
-                        value={rule.mode}
-                        onChange={(event) =>
-                          setRule(index, {
-                            mode: event.target.value as BatchRule['mode'],
-                            value: event.target.value === 'all' ? '' : rule.value,
-                          })
-                        }
-                      >
-                        <option value="all">All</option>
-                        <option value="percent">Percent</option>
-                        <option value="count">Row count</option>
-                      </Select>
-                    </Field>
-                    <Field label={rule.mode === 'percent' ? 'Percent' : 'Rows'}>
-                      <Input
-                        disabled={rule.mode === 'all'}
-                        required={rule.mode !== 'all'}
-                        type="number"
-                        min={rule.mode === 'percent' ? 0.000001 : 1}
-                        max={rule.mode === 'percent' ? 100 : undefined}
-                        step={rule.mode === 'percent' ? 'any' : 1}
-                        placeholder={rule.mode === 'percent' ? '50' : '500000'}
-                        value={rule.value}
-                        onChange={(event) => setRule(index, { value: event.target.value })}
-                      />
-                    </Field>
+                  <option value="whole">Whole batches</option>
+                  <option value="custom">Custom amount per batch</option>
+                </Select>
+              </Field>
+              <Field label="Composition seed">
+                <Input
+                  type="number"
+                  value={form.composition_seed}
+                  onChange={(event) => setForm({ ...form, composition_seed: event.target.value })}
+                />
+              </Field>
+              <Field label="Description">
+                <Input
+                  value={form.description}
+                  onChange={(event) => setForm({ ...form, description: event.target.value })}
+                />
+              </Field>
+            </Grid>
+
+            {form.mode === 'whole' ? (
+              <Field
+                label={`Batch ids (available: ${batches.data?.map((batch) => batch.id).join(', ') ?? '—'})`}
+              >
+                <Input
+                  placeholder="1,2  (empty keeps the existing all-ready-batches behavior)"
+                  value={form.batch_ids}
+                  onChange={(event) => setForm({ ...form, batch_ids: event.target.value })}
+                />
+              </Field>
+            ) : (
+              <Card>
+                <VStack gap={3}>
+                  <HStack vAlign="center" hAlign="between">
+                    <VStack gap={1}>
+                      <Heading level={5}>Batch contributions</Heading>
+                      <Text type="supporting" color="secondary">
+                        Percent and count selections are exact and reproducible for the composition seed.
+                      </Text>
+                    </VStack>
                     <Button
                       type="button"
                       variant="ghost"
-                      disabled={rules.length === 1}
-                      onClick={() => setRules(rules.filter((_, ruleIndex) => ruleIndex !== index))}
+                      onClick={() =>
+                        setRules([...rules, { batch_id: '', mode: 'all', value: '' }])
+                      }
                     >
-                      Remove
+                      Add batch
                     </Button>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
+                  </HStack>
+                  <VStack gap={2}>
+                    {rules.map((rule, index) => (
+                      <Grid key={index} columns={4} gap={2} align="end">
+                        <Field label="Batch">
+                          <Select
+                            required
+                            value={rule.batch_id}
+                            onChange={(event) => setRule(index, { batch_id: event.target.value })}
+                          >
+                            <option value="">select…</option>
+                            {batches.data?.map((batch) => (
+                              <option key={batch.id} value={batch.id}>
+                                {batch.name} · {batch.sample_count.toLocaleString()} rows
+                              </option>
+                            ))}
+                          </Select>
+                        </Field>
+                        <Field label="Amount">
+                          <Select
+                            value={rule.mode}
+                            onChange={(event) =>
+                              setRule(index, {
+                                mode: event.target.value as BatchRule['mode'],
+                                value: event.target.value === 'all' ? '' : rule.value,
+                              })
+                            }
+                          >
+                            <option value="all">All</option>
+                            <option value="percent">Percent</option>
+                            <option value="count">Row count</option>
+                          </Select>
+                        </Field>
+                        <Field label={rule.mode === 'percent' ? 'Percent' : 'Rows'}>
+                          <Input
+                            disabled={rule.mode === 'all'}
+                            required={rule.mode !== 'all'}
+                            type="number"
+                            min={rule.mode === 'percent' ? 0.000001 : 1}
+                            max={rule.mode === 'percent' ? 100 : undefined}
+                            step={rule.mode === 'percent' ? 'any' : 1}
+                            placeholder={rule.mode === 'percent' ? '50' : '500000'}
+                            value={rule.value}
+                            onChange={(event) => setRule(index, { value: event.target.value })}
+                          />
+                        </Field>
+                        <HStack vAlign="end">
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            disabled={rules.length === 1}
+                            onClick={() => setRules(rules.filter((_, ruleIndex) => ruleIndex !== index))}
+                          >
+                            Remove
+                          </Button>
+                        </HStack>
+                      </Grid>
+                    ))}
+                  </VStack>
+                </VStack>
+              </Card>
+            )}
 
-          <div className="grid gap-3 md:grid-cols-4">
-            <Field label="Source langs">
-              <Input
-                placeholder="en"
-                value={form.src_langs}
-                onChange={(event) => setForm({ ...form, src_langs: event.target.value })}
-              />
-            </Field>
-            <Field label="Target langs">
-              <Input
-                placeholder="fa"
-                value={form.tgt_langs}
-                onChange={(event) => setForm({ ...form, tgt_langs: event.target.value })}
-              />
-            </Field>
-            <Field label="Domains">
-              <Input
-                placeholder="medical,legal"
-                value={form.domains}
-                onChange={(event) => setForm({ ...form, domains: event.target.value })}
-              />
-            </Field>
-            <Field label="Min quality">
-              <Input
-                type="number"
-                step="0.01"
-                value={form.min_quality}
-                onChange={(event) => setForm({ ...form, min_quality: event.target.value })}
-              />
-            </Field>
-          </div>
-          <Button disabled={create.isPending}>Create dataset</Button>
+            <Grid columns={4} gap={3}>
+              <Field label="Source langs">
+                <Input
+                  placeholder="en"
+                  value={form.src_langs}
+                  onChange={(event) => setForm({ ...form, src_langs: event.target.value })}
+                />
+              </Field>
+              <Field label="Target langs">
+                <Input
+                  placeholder="fa"
+                  value={form.tgt_langs}
+                  onChange={(event) => setForm({ ...form, tgt_langs: event.target.value })}
+                />
+              </Field>
+              <Field label="Domains">
+                <Input
+                  placeholder="medical,legal"
+                  value={form.domains}
+                  onChange={(event) => setForm({ ...form, domains: event.target.value })}
+                />
+              </Field>
+              <Field label="Min quality">
+                <Input
+                  type="number"
+                  step="0.01"
+                  value={form.min_quality}
+                  onChange={(event) => setForm({ ...form, min_quality: event.target.value })}
+                />
+              </Field>
+            </Grid>
+            <HStack>
+              <Button disabled={create.isPending}>Create dataset</Button>
+            </HStack>
+          </VStack>
         </form>
       </Card>
 
@@ -301,8 +309,6 @@ export default function Datasets() {
             patch.mutate(
               {
                 id: editing.id,
-                // The dataset endpoint replaces the whole definition, so send the
-                // existing composition unchanged and only touch name/description.
                 body: {
                   name: values.name,
                   description: values.description || null,
@@ -344,14 +350,14 @@ export default function Datasets() {
             key: 'filters',
             header: 'Filters',
             render: (row) => (
-              <code className="text-xs">{JSON.stringify(row.filters).slice(0, 90)}</code>
+              <Text type="code">{JSON.stringify(row.filters).slice(0, 90)}</Text>
             ),
           },
           {
             key: 'actions',
             header: '',
             render: (row) => (
-              <div className="flex gap-2">
+              <HStack gap={2}>
                 <Button variant="ghost" onClick={() => setEditing(row as unknown as Dataset)}>
                   Edit
                 </Button>
@@ -361,195 +367,209 @@ export default function Datasets() {
                 <Button variant="danger" onClick={() => remove.mutate(row.id as number)}>
                   Delete
                 </Button>
-              </div>
+              </HStack>
             ),
           },
         ]}
       />
 
       {inspect !== null && (
-        <div className="mt-4 space-y-4">
+        <VStack gap={4}>
           <Card>
-            <div className="mb-3 flex items-center justify-between">
-              <div>
-                <h2 className="font-medium">Composition and current allocations</h2>
-                <p className="text-xs text-slate-500">
-                  Snapshot splits use only the trainable rows shown here.
-                </p>
-              </div>
-              <Button variant="ghost" onClick={() => setInspect(null)}>
-                Close
-              </Button>
-            </div>
-            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
-              {['composed', 'trainable', 'reserved_evaluation', 'quarantined', 'ignored'].map(
-                (key) => (
-                  <div key={key} className="rounded-md border border-slate-200 p-3">
-                    <div className="text-xs uppercase tracking-wide text-slate-500">
-                      {key.replace('_', ' ')}
-                    </div>
-                    <div className="mt-1 text-lg font-semibold">
-                      {allocations.data?.[key]?.toLocaleString() ?? '—'}
-                    </div>
-                  </div>
-                ),
-              )}
-            </div>
-          </Card>
-
-          <Card>
-            <h2 className="font-medium">Reserve evaluation data</h2>
-            <p className="mt-1 text-sm text-slate-500">
-              The exact target overrides percent and cap. Registry scope is safest for reusable
-              benchmarks. Reservation and quarantine are permanent global allocations.
-            </p>
-            <ErrorBox error={reserve.error} />
-            <form
-              className="mt-3 grid gap-3 md:grid-cols-4"
-              onSubmit={(event) => {
-                event.preventDefault()
-                reserve.mutate({
-                  selector: reservation.selector,
-                  percent: Number(reservation.percent),
-                  max_samples: Number(reservation.max_samples),
-                  target_count: reservation.target_count
-                    ? Number(reservation.target_count)
-                    : null,
-                  seed: Number(reservation.seed),
-                  contamination_scope: reservation.contamination_scope,
-                  confirm_irreversible: true,
-                })
-              }}
-            >
-              <Field label="Selector">
-                <Select
-                  value={reservation.selector}
-                  onChange={(event) =>
-                    setReservation({ ...reservation, selector: event.target.value })
-                  }
-                >
-                  <option value="contamination_safe">contamination_safe</option>
-                  <option value="heuristic">heuristic</option>
-                  <option value="random">random</option>
-                </Select>
-              </Field>
-              <Field label="Evaluation percent">
-                <Input
-                  type="number"
-                  min="0"
-                  max="100"
-                  step="any"
-                  value={reservation.percent}
-                  onChange={(event) =>
-                    setReservation({ ...reservation, percent: event.target.value })
-                  }
-                />
-              </Field>
-              <Field label="Maximum samples">
-                <Input
-                  type="number"
-                  min="0"
-                  value={reservation.max_samples}
-                  onChange={(event) =>
-                    setReservation({ ...reservation, max_samples: event.target.value })
-                  }
-                />
-              </Field>
-              <Field label="Exact target (optional)">
-                <Input
-                  type="number"
-                  min="0"
-                  placeholder="e.g. 20000"
-                  value={reservation.target_count}
-                  onChange={(event) =>
-                    setReservation({ ...reservation, target_count: event.target.value })
-                  }
-                />
-              </Field>
-              <Field label="Reservation seed">
-                <Input
-                  type="number"
-                  value={reservation.seed}
-                  onChange={(event) =>
-                    setReservation({ ...reservation, seed: event.target.value })
-                  }
-                />
-              </Field>
-              <Field label="Contamination scan">
-                <Select
-                  value={reservation.contamination_scope}
-                  onChange={(event) =>
-                    setReservation({ ...reservation, contamination_scope: event.target.value })
-                  }
-                >
-                  <option value="registry">All ready batches</option>
-                  <option value="composition">This composition only</option>
-                </Select>
-              </Field>
-              <label className="flex items-center gap-2 self-end pb-2 text-sm text-slate-700">
-                <input
-                  type="checkbox"
-                  checked={reservation.confirmed}
-                  onChange={(event) =>
-                    setReservation({ ...reservation, confirmed: event.target.checked })
-                  }
-                />
-                I understand this is irreversible
-              </label>
-              <div className="flex items-end">
-                <Button disabled={reserve.isPending || !reservation.confirmed}>
-                  Start reservation
+            <VStack gap={3}>
+              <HStack vAlign="center" hAlign="between">
+                <VStack gap={1}>
+                  <Heading level={4}>Composition and current allocations</Heading>
+                  <Text type="supporting" color="secondary">
+                    Snapshot splits use only the trainable rows shown here.
+                  </Text>
+                </VStack>
+                <Button variant="ghost" onClick={() => setInspect(null)}>
+                  Close
                 </Button>
-              </div>
-            </form>
-          </Card>
-
-          <div className="grid gap-4 lg:grid-cols-2">
-            <Card>
-              <h2 className="mb-2 font-medium">Reservation history</h2>
-              <div className="space-y-2">
-                {reservations.data?.length ? (
-                  reservations.data.map((item) => (
-                    <div key={item.id} className="rounded-md border border-slate-200 p-3 text-sm">
-                      <div className="flex items-center justify-between">
-                        <span>Reservation {item.id} · {item.selector}</span>
-                        <Badge>{item.status}</Badge>
-                      </div>
-                      {item.error && <p className="mt-2 text-red-700">{item.error}</p>}
-                      {item.report && (
-                        <pre className="mt-2 max-h-56 overflow-auto text-xs">
-                          {JSON.stringify(item.report, null, 2)}
-                        </pre>
-                      )}
-                    </div>
-                  ))
-                ) : (
-                  <p className="text-sm text-slate-500">No dataset-level reservations yet.</p>
+              </HStack>
+              <Grid columns={5} gap={2}>
+                {['composed', 'trainable', 'reserved_evaluation', 'quarantined', 'ignored'].map(
+                  (key) => (
+                    <Card key={key}>
+                      <VStack gap={1}>
+                        <Text type="supporting" color="secondary" weight="medium">
+                          {key.replace('_', ' ').toUpperCase()}
+                        </Text>
+                        <Heading level={4}>
+                          {allocations.data?.[key]?.toLocaleString() ?? '—'}
+                        </Heading>
+                      </VStack>
+                    </Card>
+                  ),
                 )}
-              </div>
-            </Card>
-            <Card>
-              <h2 className="mb-2 font-medium">Trainable statistics</h2>
-              <pre className="max-h-80 overflow-auto text-xs">
-                {stats.isLoading ? 'Loading…' : JSON.stringify(stats.data, null, 2)}
-              </pre>
-            </Card>
-          </div>
+              </Grid>
+            </VStack>
+          </Card>
 
           <Card>
-            <h2 className="mb-2 font-medium">Trainable preview</h2>
-            <DataTable
-              loading={preview.isLoading}
-              rows={preview.data}
-              columns={[
-                { key: 'sample_id', header: 'ID' },
-                { key: 'source_text', header: 'Source' },
-                { key: 'target_text', header: 'Target' },
-              ]}
-            />
+            <VStack gap={3}>
+              <Heading level={4}>Reserve evaluation data</Heading>
+              <Text type="supporting" color="secondary">
+                The exact target overrides percent and cap. Registry scope is safest for reusable
+                benchmarks. Reservation and quarantine are permanent global allocations.
+              </Text>
+              <ErrorBox error={reserve.error} />
+              <form
+                onSubmit={(event) => {
+                  event.preventDefault()
+                  reserve.mutate({
+                    selector: reservation.selector,
+                    percent: Number(reservation.percent),
+                    max_samples: Number(reservation.max_samples),
+                    target_count: reservation.target_count
+                      ? Number(reservation.target_count)
+                      : null,
+                    seed: Number(reservation.seed),
+                    contamination_scope: reservation.contamination_scope,
+                    confirm_irreversible: true,
+                  })
+                }}
+              >
+                <Grid columns={4} gap={3} align="end">
+                  <Field label="Selector">
+                    <Select
+                      value={reservation.selector}
+                      onChange={(event) =>
+                        setReservation({ ...reservation, selector: event.target.value })
+                      }
+                    >
+                      <option value="contamination_safe">contamination_safe</option>
+                      <option value="heuristic">heuristic</option>
+                      <option value="random">random</option>
+                    </Select>
+                  </Field>
+                  <Field label="Evaluation percent">
+                    <Input
+                      type="number"
+                      min="0"
+                      max="100"
+                      step="any"
+                      value={reservation.percent}
+                      onChange={(event) =>
+                        setReservation({ ...reservation, percent: event.target.value })
+                      }
+                    />
+                  </Field>
+                  <Field label="Maximum samples">
+                    <Input
+                      type="number"
+                      min="0"
+                      value={reservation.max_samples}
+                      onChange={(event) =>
+                        setReservation({ ...reservation, max_samples: event.target.value })
+                      }
+                    />
+                  </Field>
+                  <Field label="Exact target (optional)">
+                    <Input
+                      type="number"
+                      min="0"
+                      placeholder="e.g. 20000"
+                      value={reservation.target_count}
+                      onChange={(event) =>
+                        setReservation({ ...reservation, target_count: event.target.value })
+                      }
+                    />
+                  </Field>
+                  <Field label="Reservation seed">
+                    <Input
+                      type="number"
+                      value={reservation.seed}
+                      onChange={(event) =>
+                        setReservation({ ...reservation, seed: event.target.value })
+                      }
+                    />
+                  </Field>
+                  <Field label="Contamination scan">
+                    <Select
+                      value={reservation.contamination_scope}
+                      onChange={(event) =>
+                        setReservation({ ...reservation, contamination_scope: event.target.value })
+                      }
+                    >
+                      <option value="registry">All ready batches</option>
+                      <option value="composition">This composition only</option>
+                    </Select>
+                  </Field>
+                  <Checkbox
+                    label="I understand this is irreversible"
+                    checked={reservation.confirmed}
+                    onChange={(confirmed) =>
+                      setReservation({ ...reservation, confirmed })
+                    }
+                  />
+                  <HStack vAlign="end">
+                    <Button disabled={reserve.isPending || !reservation.confirmed}>
+                      Start reservation
+                    </Button>
+                  </HStack>
+                </Grid>
+              </form>
+            </VStack>
           </Card>
-        </div>
+
+          <Grid columns={2} gap={4}>
+            <Card>
+              <VStack gap={3}>
+                <Heading level={4}>Reservation history</Heading>
+                <VStack gap={2}>
+                  {reservations.data?.length ? (
+                    reservations.data.map((item) => (
+                      <Card key={item.id}>
+                        <VStack gap={2}>
+                          <HStack vAlign="center" hAlign="between">
+                            <Text type="body" weight="medium">Reservation {item.id} · {item.selector}</Text>
+                            <Badge>{item.status}</Badge>
+                          </HStack>
+                          {item.error && <Text type="body" color="secondary">{item.error}</Text>}
+                          {item.report && (
+                            <CodeBlock
+                              language="json"
+                              code={JSON.stringify(item.report, null, 2)}
+                            />
+                          )}
+                        </VStack>
+                      </Card>
+                    ))
+                  ) : (
+                    <Text type="supporting" color="secondary">No dataset-level reservations yet.</Text>
+                  )}
+                </VStack>
+              </VStack>
+            </Card>
+            <Card>
+              <VStack gap={3}>
+                <Heading level={4}>Trainable statistics</Heading>
+                <CodeBlock
+                  language="json"
+                  code={stats.isLoading ? 'Loading…' : JSON.stringify(stats.data, null, 2)}
+                />
+              </VStack>
+            </Card>
+          </Grid>
+
+          <Card>
+            <VStack gap={3}>
+              <Heading level={4}>Trainable preview</Heading>
+              <DataTable
+                loading={preview.isLoading}
+                rows={preview.data}
+                columns={[
+                  { key: 'sample_id', header: 'ID' },
+                  { key: 'source_text', header: 'Source' },
+                  { key: 'target_text', header: 'Target' },
+                ]}
+              />
+            </VStack>
+          </Card>
+        </VStack>
       )}
-    </>
+    </VStack>
   )
 }

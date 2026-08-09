@@ -9,4 +9,5 @@ dist/
 *.duckdb
 .DS_Store
 .brana
+.impeccable
 mtdataregistry_*.tar.gz

@@ -1,4 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
+import { VStack } from '@astryxdesign/core/Stack'
+import { Grid } from '@astryxdesign/core/Grid'
+import { Heading } from '@astryxdesign/core/Text'
 
 import { DataTable } from '@/components/DataTable'
 import { Card, PageHeader } from '@/components/ui'
@@ -12,21 +15,23 @@ function StatTable({ title, path, columns }: { title: string; path: string; colu
   })
   return (
     <Card>
-      <h2 className="mb-3 font-medium">{title}</h2>
-      <DataTable
-        loading={isLoading}
-        rows={data}
-        columns={columns.map((c) => ({ key: c, header: c.replace(/_/g, ' ') }))}
-      />
+      <VStack gap={3}>
+        <Heading level={4}>{title}</Heading>
+        <DataTable
+          loading={isLoading}
+          rows={data}
+          columns={columns.map((c) => ({ key: c, header: c.replace(/_/g, ' ') }))}
+        />
+      </VStack>
     </Card>
   )
 }
 
 export default function Statistics() {
   return (
-    <>
+    <VStack gap={4}>
       <PageHeader title="Statistics" subtitle="Registry-wide counts, served from Postgres" />
-      <div className="grid gap-4 lg:grid-cols-2">
+      <Grid columns={2} gap={4}>
         <StatTable
           title="By language pair"
           path="/stats/language-pairs"
@@ -35,7 +40,7 @@ export default function Statistics() {
         <StatTable title="By domain" path="/stats/domains" columns={['domain', 'count']} />
         <StatTable title="By batch" path="/stats/batches" columns={['id', 'name', 'sample_count']} />
         <StatTable title="By source" path="/stats/sources" columns={['source_id', 'count']} />
-      </div>
-    </>
+      </Grid>
+    </VStack>
   )
 }

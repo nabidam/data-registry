@@ -1,5 +1,8 @@
 import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
+import { HStack, VStack } from '@astryxdesign/core/Stack'
+import { Grid } from '@astryxdesign/core/Grid'
+import { Heading } from '@astryxdesign/core/Text'
 
 import { DataTable } from '@/components/DataTable'
 import { Button, Card, ErrorBox, Field, Input, PageHeader, Select } from '@/components/ui'
@@ -34,16 +37,15 @@ export default function EvaluationSets() {
   })
 
   return (
-    <>
+    <VStack gap={4}>
       <PageHeader
         title="Evaluation Sets"
         subtitle="Built only from reserved samples; independent from train/validation/test splits"
       />
       <ErrorBox error={create.error} />
 
-      <Card className="mb-4">
+      <Card>
         <form
-          className="grid gap-3 md:grid-cols-4"
           onSubmit={(e) => {
             e.preventDefault()
             const ids = parseList(form.sample_ids).map(Number).filter(Number.isFinite)
@@ -64,93 +66,95 @@ export default function EvaluationSets() {
             })
           }}
         >
-          <Field label="Name">
-            <Input
-              required
-              value={form.name}
-              onChange={(e) => setForm({ ...form, name: e.target.value })}
-            />
-          </Field>
-          <Field label="Kind">
-            <Select value={form.kind} onChange={(e) => setForm({ ...form, kind: e.target.value })}>
-              <option value="sampled">sampled</option>
-              <option value="manual">manual</option>
-              <option value="imported">imported</option>
-            </Select>
-          </Field>
-          <Field label="Domains">
-            <Input
-              placeholder="medical"
-              value={form.domains}
-              onChange={(e) => setForm({ ...form, domains: e.target.value })}
-            />
-          </Field>
-          <Field label="Source langs">
-            <Input
-              value={form.src_langs}
-              onChange={(e) => setForm({ ...form, src_langs: e.target.value })}
-            />
-          </Field>
-          <Field label="Evaluation split">
-            <Select
-              value={form.evaluation_split}
-              onChange={(e) => setForm({ ...form, evaluation_split: e.target.value })}
-            >
-              <option value="">dev and test</option>
-              <option value="dev">dev only</option>
-              <option value="test">test only</option>
-            </Select>
-          </Field>
-          <Field label="Human verification">
-            <Select
-              value={form.human_verify}
-              onChange={(e) => setForm({ ...form, human_verify: e.target.value })}
-            >
-              <option value="">any status</option>
-              <option value="required">required only</option>
-              <option value="not-required">not required</option>
-            </Select>
-          </Field>
-          <Field label="Limit (sampled)">
-            <Input
-              type="number"
-              disabled={Boolean(form.reservation_id)}
-              value={form.limit}
-              onChange={(e) => setForm({ ...form, limit: e.target.value })}
-            />
-          </Field>
-          <Field label="Sample ids (manual/imported)">
-            <Input
-              placeholder="12,44,91"
-              value={form.sample_ids}
-              onChange={(e) => setForm({ ...form, sample_ids: e.target.value })}
-            />
-          </Field>
-          <Field label="Dataset reservation (optional)">
-            <Select
-              value={form.reservation_id}
-              onChange={(e) => setForm({ ...form, reservation_id: e.target.value })}
-            >
-              <option value="">all reserved samples</option>
-              {reservations.data
-                ?.filter((reservation) => reservation.status === 'ready')
-                .map((reservation) => (
-                  <option key={reservation.id} value={reservation.id}>
-                    reservation {reservation.id} · dataset {reservation.dataset_id}
-                  </option>
-                ))}
-            </Select>
-          </Field>
-          <Field label="Seed">
-            <Input
-              type="number"
-              value={form.seed}
-              onChange={(e) => setForm({ ...form, seed: e.target.value })}
-            />
-          </Field>
-          <div className="flex items-end">
-            <Button disabled={create.isPending}>Build set</Button>
-          </div>
+          <Grid columns={4} gap={3} align="end">
+            <Field label="Name">
+              <Input
+                required
+                value={form.name}
+                onChange={(e) => setForm({ ...form, name: e.target.value })}
+              />
+            </Field>
+            <Field label="Kind">
+              <Select value={form.kind} onChange={(e) => setForm({ ...form, kind: e.target.value })}>
+                <option value="sampled">sampled</option>
+                <option value="manual">manual</option>
+                <option value="imported">imported</option>
+              </Select>
+            </Field>
+            <Field label="Domains">
+              <Input
+                placeholder="medical"
+                value={form.domains}
+                onChange={(e) => setForm({ ...form, domains: e.target.value })}
+              />
+            </Field>
+            <Field label="Source langs">
+              <Input
+                value={form.src_langs}
+                onChange={(e) => setForm({ ...form, src_langs: e.target.value })}
+              />
+            </Field>
+            <Field label="Evaluation split">
+              <Select
+                value={form.evaluation_split}
+                onChange={(e) => setForm({ ...form, evaluation_split: e.target.value })}
+              >
+                <option value="">dev and test</option>
+                <option value="dev">dev only</option>
+                <option value="test">test only</option>
+              </Select>
+            </Field>
+            <Field label="Human verification">
+              <Select
+                value={form.human_verify}
+                onChange={(e) => setForm({ ...form, human_verify: e.target.value })}
+              >
+                <option value="">any status</option>
+                <option value="required">required only</option>
+                <option value="not-required">not required</option>
+              </Select>
+            </Field>
+            <Field label="Limit (sampled)">
+              <Input
+                type="number"
+                disabled={Boolean(form.reservation_id)}
+                value={form.limit}
+                onChange={(e) => setForm({ ...form, limit: e.target.value })}
+              />
+            </Field>
+            <Field label="Sample ids (manual/imported)">
+              <Input
+                placeholder="12,44,91"
+                value={form.sample_ids}
+                onChange={(e) => setForm({ ...form, sample_ids: e.target.value })}
+              />
+            </Field>
+            <Field label="Dataset reservation (optional)">
+              <Select
+                value={form.reservation_id}
+                onChange={(e) => setForm({ ...form, reservation_id: e.target.value })}
+              >
+                <option value="">all reserved samples</option>
+                {reservations.data
+                  ?.filter((reservation) => reservation.status === 'ready')
+                  .map((reservation) => (
+                    <option key={reservation.id} value={reservation.id}>
+                      reservation {reservation.id} · dataset {reservation.dataset_id}
+                    </option>
+                  ))}
+              </Select>
+            </Field>
+            <Field label="Seed">
+              <Input
+                type="number"
+                value={form.seed}
+                onChange={(e) => setForm({ ...form, seed: e.target.value })}
+              />
+            </Field>
+            <HStack vAlign="end">
+              <Button disabled={create.isPending}>Build set</Button>
+            </HStack>
+          </Grid>
         </form>
       </Card>
 
@@ -167,45 +171,47 @@ export default function EvaluationSets() {
             key: 'actions',
             header: '',
             render: (r) => (
-              <div className="flex gap-2">
+              <HStack gap={2}>
                 <Button variant="ghost" onClick={() => setOpen(r.id as number)}>
                   Rows
                 </Button>
                 <Button variant="danger" onClick={() => remove.mutate(r.id as number)}>
                   Delete
                 </Button>
-              </div>
+              </HStack>
             ),
           },
         ]}
       />
 
       {open !== null && (
-        <Card className="mt-4">
-          <div className="mb-2 flex items-center justify-between">
-            <h2 className="font-medium">Evaluation set {open}</h2>
-            <Button variant="ghost" onClick={() => setOpen(null)}>
-              Close
-            </Button>
-          </div>
-          <DataTable
-            loading={rows.isLoading}
-            rows={rows.data}
-            columns={[
-              { key: 'sample_id', header: 'ID' },
-              { key: 'source_text', header: 'Source' },
-              { key: 'target_text', header: 'Target' },
-              { key: 'domain', header: 'Domain' },
-              { key: 'evaluation_split', header: 'Split' },
-              {
-                key: 'human_verify',
-                header: 'Human verify',
-                render: (row) => (row.human_verify === true ? 'yes' : '—'),
-              },
-            ]}
-          />
+        <Card>
+          <VStack gap={3}>
+            <HStack vAlign="center" hAlign="between">
+              <Heading level={4}>Evaluation set {open}</Heading>
+              <Button variant="ghost" onClick={() => setOpen(null)}>
+                Close
+              </Button>
+            </HStack>
+            <DataTable
+              loading={rows.isLoading}
+              rows={rows.data}
+              columns={[
+                { key: 'sample_id', header: 'ID' },
+                { key: 'source_text', header: 'Source' },
+                { key: 'target_text', header: 'Target' },
+                { key: 'domain', header: 'Domain' },
+                { key: 'evaluation_split', header: 'Split' },
+                {
+                  key: 'human_verify',
+                  header: 'Human verify',
+                  render: (row) => (row.human_verify === true ? 'yes' : '—'),
+                },
+              ]}
+            />
+          </VStack>
         </Card>
       )}
-    </>
+    </VStack>
   )
 }

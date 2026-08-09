@@ -1,4 +1,6 @@
 import { useState } from 'react'
+import { HStack, VStack } from '@astryxdesign/core/Stack'
+import { Grid } from '@astryxdesign/core/Grid'
 
 import { DataTable } from '@/components/DataTable'
 import { EditEntity } from '@/components/EditEntity'
@@ -26,13 +28,12 @@ export default function Experiments() {
   })
 
   return (
-    <>
+    <VStack gap={4}>
       <PageHeader title="Experiments" subtitle="Training runs. Only references are stored." />
       <ErrorBox error={create.error} />
 
-      <Card className="mb-4">
+      <Card>
         <form
-          className="grid gap-3 md:grid-cols-4"
           onSubmit={(e) => {
             e.preventDefault()
             create.mutate({
@@ -45,64 +46,66 @@ export default function Experiments() {
             })
           }}
         >
-          <Field label="Name">
-            <Input
-              required
-              value={form.name}
-              onChange={(e) => setForm({ ...form, name: e.target.value })}
-            />
-          </Field>
-          <Field label="Snapshot">
-            <Select
-              value={form.snapshot_id}
-              onChange={(e) => setForm({ ...form, snapshot_id: e.target.value })}
-            >
-              <option value="">—</option>
-              {snapshots.data?.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.name}
-                </option>
-              ))}
-            </Select>
-          </Field>
-          <Field label="Split">
-            <Select
-              value={form.split_id}
-              onChange={(e) => setForm({ ...form, split_id: e.target.value })}
-            >
-              <option value="">—</option>
-              {splits.data?.map((s) => (
-                <option key={s.id} value={s.id}>
-                  #{s.id} {s.name}
-                </option>
-              ))}
-            </Select>
-          </Field>
-          <Field label="MLflow run id">
-            <Input
-              value={form.mlflow_run_id}
-              onChange={(e) => setForm({ ...form, mlflow_run_id: e.target.value })}
-            />
-          </Field>
-          <Field label="Status">
-            <Select
-              value={form.status}
-              onChange={(e) => setForm({ ...form, status: e.target.value })}
-            >
-              {STATUSES.map((s) => (
-                <option key={s}>{s}</option>
-              ))}
-            </Select>
-          </Field>
-          <Field label="Notes">
-            <Input
-              value={form.notes}
-              onChange={(e) => setForm({ ...form, notes: e.target.value })}
-            />
-          </Field>
-          <div className="flex items-end">
-            <Button disabled={create.isPending}>Add experiment</Button>
-          </div>
+          <Grid columns={4} gap={3} align="end">
+            <Field label="Name">
+              <Input
+                required
+                value={form.name}
+                onChange={(e) => setForm({ ...form, name: e.target.value })}
+              />
+            </Field>
+            <Field label="Snapshot">
+              <Select
+                value={form.snapshot_id}
+                onChange={(e) => setForm({ ...form, snapshot_id: e.target.value })}
+              >
+                <option value="">—</option>
+                {snapshots.data?.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            <Field label="Split">
+              <Select
+                value={form.split_id}
+                onChange={(e) => setForm({ ...form, split_id: e.target.value })}
+              >
+                <option value="">—</option>
+                {splits.data?.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    #{s.id} {s.name}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            <Field label="MLflow run id">
+              <Input
+                value={form.mlflow_run_id}
+                onChange={(e) => setForm({ ...form, mlflow_run_id: e.target.value })}
+              />
+            </Field>
+            <Field label="Status">
+              <Select
+                value={form.status}
+                onChange={(e) => setForm({ ...form, status: e.target.value })}
+              >
+                {STATUSES.map((s) => (
+                  <option key={s}>{s}</option>
+                ))}
+              </Select>
+            </Field>
+            <Field label="Notes">
+              <Input
+                value={form.notes}
+                onChange={(e) => setForm({ ...form, notes: e.target.value })}
+              />
+            </Field>
+            <HStack vAlign="end">
+              <Button disabled={create.isPending}>Add experiment</Button>
+            </HStack>
+          </Grid>
         </form>
       </Card>
 
@@ -150,18 +153,18 @@ export default function Experiments() {
             key: 'actions',
             header: '',
             render: (r) => (
-              <div className="flex gap-2">
+              <HStack gap={2}>
                 <Button variant="ghost" onClick={() => setEditing(r as unknown as Experiment)}>
                   Edit
                 </Button>
                 <Button variant="danger" onClick={() => remove.mutate(r.id as number)}>
                   Delete
                 </Button>
-              </div>
+              </HStack>
             ),
           },
         ]}
       />
-    </>
+    </VStack>
   )
 }

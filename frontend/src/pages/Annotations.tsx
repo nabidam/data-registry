@@ -1,4 +1,6 @@
 import { useState } from 'react'
+import { HStack, VStack } from '@astryxdesign/core/Stack'
+import { Grid } from '@astryxdesign/core/Grid'
 
 import { DataTable } from '@/components/DataTable'
 import { Button, Card, ErrorBox, Field, Input, PageHeader, Select } from '@/components/ui'
@@ -20,16 +22,15 @@ export default function Annotations() {
   })
 
   return (
-    <>
+    <VStack gap={4}>
       <PageHeader
         title="Annotations"
         subtitle="Per-sample metadata. Original data is never modified; ignored samples are excluded at build time."
       />
       <ErrorBox error={create.error} />
 
-      <Card className="mb-4">
+      <Card>
         <form
-          className="grid gap-3 md:grid-cols-4"
           onSubmit={(e) => {
             e.preventDefault()
             create.mutate({
@@ -43,64 +44,66 @@ export default function Annotations() {
             })
           }}
         >
-          <Field label="Sample id">
-            <Input
-              required
-              type="number"
-              value={form.sample_id}
-              onChange={(e) => setForm({ ...form, sample_id: e.target.value })}
-            />
-          </Field>
-          <Field label="Ignored">
-            <Select
-              value={form.ignored}
-              onChange={(e) => setForm({ ...form, ignored: e.target.value })}
-            >
-              <option value="false">no</option>
-              <option value="true">yes</option>
-            </Select>
-          </Field>
-          <Field label="Quality">
-            <Input
-              type="number"
-              step="0.01"
-              value={form.quality}
-              onChange={(e) => setForm({ ...form, quality: e.target.value })}
-            />
-          </Field>
-          <Field label="Review status">
-            <Select
-              value={form.review_status}
-              onChange={(e) => setForm({ ...form, review_status: e.target.value })}
-            >
-              <option value="">—</option>
-              <option value="pending">pending</option>
-              <option value="approved">approved</option>
-              <option value="rejected">rejected</option>
-            </Select>
-          </Field>
-          <Field label="Tags">
-            <Input
-              placeholder="noisy,ocr"
-              value={form.tags}
-              onChange={(e) => setForm({ ...form, tags: e.target.value })}
-            />
-          </Field>
-          <Field label="Comment">
-            <Input
-              value={form.comment}
-              onChange={(e) => setForm({ ...form, comment: e.target.value })}
-            />
-          </Field>
-          <Field label="Author">
-            <Input
-              value={form.author}
-              onChange={(e) => setForm({ ...form, author: e.target.value })}
-            />
-          </Field>
-          <div className="flex items-end">
-            <Button disabled={create.isPending}>Add annotation</Button>
-          </div>
+          <Grid columns={4} gap={3} align="end">
+            <Field label="Sample id">
+              <Input
+                required
+                type="number"
+                value={form.sample_id}
+                onChange={(e) => setForm({ ...form, sample_id: e.target.value })}
+              />
+            </Field>
+            <Field label="Ignored">
+              <Select
+                value={form.ignored}
+                onChange={(e) => setForm({ ...form, ignored: e.target.value })}
+              >
+                <option value="false">no</option>
+                <option value="true">yes</option>
+              </Select>
+            </Field>
+            <Field label="Quality">
+              <Input
+                type="number"
+                step="0.01"
+                value={form.quality}
+                onChange={(e) => setForm({ ...form, quality: e.target.value })}
+              />
+            </Field>
+            <Field label="Review status">
+              <Select
+                value={form.review_status}
+                onChange={(e) => setForm({ ...form, review_status: e.target.value })}
+              >
+                <option value="">—</option>
+                <option value="pending">pending</option>
+                <option value="approved">approved</option>
+                <option value="rejected">rejected</option>
+              </Select>
+            </Field>
+            <Field label="Tags">
+              <Input
+                placeholder="noisy,ocr"
+                value={form.tags}
+                onChange={(e) => setForm({ ...form, tags: e.target.value })}
+              />
+            </Field>
+            <Field label="Comment">
+              <Input
+                value={form.comment}
+                onChange={(e) => setForm({ ...form, comment: e.target.value })}
+              />
+            </Field>
+            <Field label="Author">
+              <Input
+                value={form.author}
+                onChange={(e) => setForm({ ...form, author: e.target.value })}
+              />
+            </Field>
+            <HStack vAlign="end">
+              <Button disabled={create.isPending}>Add annotation</Button>
+            </HStack>
+          </Grid>
         </form>
       </Card>
 
@@ -126,6 +129,6 @@ export default function Annotations() {
           },
         ]}
       />
-    </>
+    </VStack>
   )
 }

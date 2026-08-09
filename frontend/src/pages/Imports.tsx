@@ -1,8 +1,12 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
+import { HStack, VStack } from '@astryxdesign/core/Stack'
+import { Grid } from '@astryxdesign/core/Grid'
+import { Heading, Text } from '@astryxdesign/core/Text'
+import { ProgressBar } from '@astryxdesign/core/ProgressBar'
 
 import { DataTable } from '@/components/DataTable'
-import { Badge, Button, Card, ErrorBox, Field, Input, PageHeader, Select } from '@/components/ui'
+import { Badge, Button, Card, ErrorBox, Field, FilePicker, Input, PageHeader, Select } from '@/components/ui'
 import { useList } from '@/hooks/useResource'
 import { api } from '@/lib/api'
 import type { Batch, ImportStats, ReservationDefaults, Row, Source } from '@/types'
@@ -22,7 +26,7 @@ function formatCount(value: number | undefined) {
 function ImportProgressView({ batch }: { batch: Batch }) {
   const stats = batch.stats as ImportStats | null
   const progress = stats?.progress
-  if (!progress) return <span className="text-slate-400">—</span>
+  if (!progress) return <Text type="supporting" color="secondary">—</Text>
   const heartbeatAge = progress.updated_at ? Date.now() - new Date(progress.updated_at).getTime() : 0
   const heartbeatStale = batch.status === 'importing' && heartbeatAge > 60_000
   const shards = progress.shards_total
@@ -36,29 +40,29 @@ function ImportProgressView({ batch }: { batch: Batch }) {
       ? formatCount(progress.items_processed)
       : null
   return (
-    <div className="min-w-64 whitespace-normal">
-      <div className="font-medium text-slate-700">{progress.phase?.replaceAll('_', ' ')}</div>
+    <VStack gap={1} style={{ minWidth: '16rem' }}>
+      <Text type="body" weight="medium">{progress.phase?.replaceAll('_', ' ')}</Text>
       {progress.stage ? (
-        <div className="mt-0.5 text-xs font-medium text-slate-600">
+        <Text type="supporting" weight="medium">
           {progress.stage.replaceAll('_', ' ')}
           {stageItems ? ` · ${stageItems}` : ''}
           {progress.stage_elapsed_seconds !== undefined
             ? ` · ${progress.stage_elapsed_seconds.toLocaleString()}s`
             : ''}
-        </div>
+        </Text>
       ) : null}
-      <div className="mt-0.5 text-xs text-slate-500">{progress.message}</div>
-      <div className="mt-1 text-xs tabular-nums text-slate-600">
+      <Text type="supporting" color="secondary">{progress.message}</Text>
+      <Text type="code">
         {formatCount(progress.rows_processed)} rows{shards ? ` · ${shards}` : ''}
         {stats?.attempt ? ` · attempt ${stats.attempt}` : ''}
-      </div>
+      </Text>
       {progress.updated_at ? (
-        <div className={`mt-0.5 text-xs ${heartbeatStale ? 'font-medium text-red-700' : 'text-slate-400'}`}>
+        <Text type="supporting" color={heartbeatStale ? 'disabled' : 'secondary'}>
           {heartbeatStale ? 'Worker heartbeat is stale · ' : 'Updated '}
           {new Date(progress.updated_at).toLocaleTimeString()}
-        </div>
+        </Text>
       ) : null}
-    </div>
+    </VStack>
   )
 }
 
@@ -88,14 +92,12 @@ export default function Imports() {
     quality_column: '',
     document_id_column: '',
     notes: '',
-    // Evaluation reservation, applied to this import before anything is trainable.
     evaluation_percent: '',
     evaluation_max_samples: '',
     evaluation_selector: '',
     random_seed: '',
   })
 
-  // Blank reservation fields fall back to these server-side defaults.
   const defaults = useQuery({
     queryKey: ['reservation-defaults'],
     queryFn: () => api.get<ReservationDefaults>('/imports/reservation-defaults'),
@@ -106,9 +108,6 @@ export default function Imports() {
     setError(null)
     const body = new FormData()
     const isPartial = f.size > INSPECTION_LIMIT_BYTES
-    // Inspect only a bounded head of a large delimited file. The server drops
-    // its incomplete final line, so the familiar column selector and preview
-    // remain available without re-uploading the entire corpus.
     const previewFile = isPartial
       ? new File([f.slice(0, INSPECTION_LIMIT_BYTES)], f.name, { type: f.type })
       : f
@@ -117,7 +116,6 @@ export default function Imports() {
     try {
       const result = await api.upload<Inspection>('/imports/inspect', body)
       setInspection(result)
-      // Pre-fill the mapping when the file already uses canonical names.
       setForm((prev) => ({
         ...prev,
         source_column: result.columns.includes(prev.source_column)
@@ -148,7 +146,6 @@ export default function Imports() {
       for (let index = 0; index < totalParts; index += 1) {
         const body = new FormData()
         body.append('upload_id', started.upload_id)
-        // A named File keeps the raw object key stable across every part.
         body.append(
           'file',
           new File([file.slice(index * started.part_size, (index + 1) * started.part_size)], file.name, {
@@ -213,7 +210,7 @@ export default function Imports() {
   )
 
   return (
-    <>
+    <VStack gap={4}>
       <PageHeader
         title="Imports"
         subtitle="Each import creates one immutable batch; a slice is reserved for evaluation before any of it becomes trainable"
@@ -222,228 +219,239 @@ export default function Imports() {
       <ErrorBox error={batches.error} />
 
       {batches.data?.some((batch) => ACTIVE_IMPORT_STATUSES.has(batch.status)) ? (
-        <Card className="mb-4 border-blue-200 bg-blue-50">
-          <div className="text-sm font-medium text-blue-950">Import worker activity</div>
-          <div className="mt-2 grid gap-2">
-            {batches.data
-              .filter((batch) => ACTIVE_IMPORT_STATUSES.has(batch.status))
-              .map((batch) => (
-                <div key={batch.id} className="flex flex-wrap items-start justify-between gap-3 text-sm">
-                  <div>
-                    <span className="font-medium">{batch.name}</span>{' '}
-                    <Badge>{batch.status}</Badge>
-                  </div>
-                  <ImportProgressView batch={batch} />
-                </div>
-              ))}
-          </div>
+        <Card>
+          <VStack gap={3}>
+            <Heading level={4}>Import worker activity</Heading>
+            <VStack gap={2}>
+              {batches.data
+                .filter((batch) => ACTIVE_IMPORT_STATUSES.has(batch.status))
+                .map((batch) => (
+                  <HStack key={batch.id} vAlign="start" hAlign="between" gap={3}>
+                    <HStack vAlign="center" gap={2}>
+                      <Text type="body" weight="medium">{batch.name}</Text>
+                      <Badge>{batch.status}</Badge>
+                    </HStack>
+                    <ImportProgressView batch={batch} />
+                  </HStack>
+                ))}
+            </VStack>
+          </VStack>
         </Card>
       ) : null}
 
-      <Card className="mb-4">
-        <form className="grid gap-3 md:grid-cols-4" onSubmit={submit}>
-          <Field label="File">
-            <Input
-              type="file"
-              required
-              onChange={(e) => {
-                const f = e.target.files?.[0] ?? null
-                setFile(f)
-                if (f) void inspect(f)
-              }}
-            />
-          </Field>
-          <Field label="Batch name">
-            <Input
-              required
-              value={form.batch_name}
-              onChange={(e) => setForm({ ...form, batch_name: e.target.value })}
-            />
-          </Field>
-          <Field label="Source language">
-            <Input
-              required
-              value={form.src_lang}
-              onChange={(e) => setForm({ ...form, src_lang: e.target.value })}
-            />
-          </Field>
-          <Field label="Target language">
-            <Input
-              required
-              value={form.tgt_lang}
-              onChange={(e) => setForm({ ...form, tgt_lang: e.target.value })}
-            />
-          </Field>
-          <Field label="Source (origin)">
-            <Select
-              value={form.source_id}
-              onChange={(e) => setForm({ ...form, source_id: e.target.value })}
-            >
-              <option value="">—</option>
-              {sources.data?.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.name}
-                </option>
-              ))}
-            </Select>
-          </Field>
-          <Field label="Default domain">
-            <Input
-              value={form.domain}
-              onChange={(e) => setForm({ ...form, domain: e.target.value })}
-            />
-          </Field>
-          {columnSelect('source_column', 'Source text column')}
-          {columnSelect('target_column', 'Target text column')}
-          {columnSelect('domain_column', 'Domain column', true)}
-          {columnSelect('quality_column', 'Quality column', true)}
-          {columnSelect('document_id_column', 'Document ID column', true)}
-          <Field label={`Evaluation % (default ${defaults.data?.evaluation_percent ?? '—'})`}>
-            <Input
-              type="number"
-              step="0.1"
-              placeholder={String(defaults.data?.evaluation_percent ?? '')}
-              value={form.evaluation_percent}
-              onChange={(e) => setForm({ ...form, evaluation_percent: e.target.value })}
-            />
-          </Field>
-          <Field label={`Max reserved (default ${defaults.data?.evaluation_max_samples ?? '—'})`}>
-            <Input
-              type="number"
-              placeholder={String(defaults.data?.evaluation_max_samples ?? '')}
-              value={form.evaluation_max_samples}
-              onChange={(e) => setForm({ ...form, evaluation_max_samples: e.target.value })}
-            />
-          </Field>
-          <Field label="Selector">
-            <Select
-              value={form.evaluation_selector}
-              onChange={(e) => setForm({ ...form, evaluation_selector: e.target.value })}
-            >
-              <option value="">{defaults.data?.evaluation_selector ?? 'default'}</option>
-              {defaults.data?.selectors
-                .filter((name) => name !== defaults.data?.evaluation_selector)
-                .map((name) => (
-                  <option key={name} value={name}>
-                    {name}
-                  </option>
-                ))}
-            </Select>
-          </Field>
-          {effectiveSelector === 'contamination_safe' && (
-            <p className="text-sm text-muted-foreground md:col-span-4">
-              {defaults.data?.policies.contamination_safe.description}{' '}
-              {defaults.data?.policies.contamination_safe.contamination.document_level_holdout ===
-              true
-                ? 'Document holdout is enabled.'
-                : 'Document holdout is disabled.'}
-            </p>
-          )}
-          <Field label={`Seed (default ${defaults.data?.random_seed ?? '—'})`}>
-            <Input
-              type="number"
-              placeholder={String(defaults.data?.random_seed ?? '')}
-              value={form.random_seed}
-              onChange={(e) => setForm({ ...form, random_seed: e.target.value })}
-            />
-          </Field>
-          <Field label="Notes">
-            <Input
-              value={form.notes}
-              onChange={(e) => setForm({ ...form, notes: e.target.value })}
-            />
-          </Field>
-          <div className="flex items-end">
-            <Button disabled={busy || !file}>
-              {uploadProgress === null
-                ? busy
-                  ? 'Preparing import…'
-                  : 'Import'
-                : `Uploading ${Math.round(uploadProgress * 100)}%`}
-            </Button>
-          </div>
+      <Card>
+        <form onSubmit={submit}>
+          <VStack gap={3}>
+            <Grid columns={4} gap={3} align="end">
+              <FilePicker
+                label="File"
+                required
+                onChange={(f) => {
+                  setFile(f)
+                  if (f) void inspect(f)
+                }}
+              />
+              <Field label="Batch name">
+                <Input
+                  required
+                  value={form.batch_name}
+                  onChange={(e) => setForm({ ...form, batch_name: e.target.value })}
+                />
+              </Field>
+              <Field label="Source language">
+                <Input
+                  required
+                  value={form.src_lang}
+                  onChange={(e) => setForm({ ...form, src_lang: e.target.value })}
+                />
+              </Field>
+              <Field label="Target language">
+                <Input
+                  required
+                  value={form.tgt_lang}
+                  onChange={(e) => setForm({ ...form, tgt_lang: e.target.value })}
+                />
+              </Field>
+              <Field label="Source (origin)">
+                <Select
+                  value={form.source_id}
+                  onChange={(e) => setForm({ ...form, source_id: e.target.value })}
+                >
+                  <option value="">—</option>
+                  {sources.data?.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+              <Field label="Default domain">
+                <Input
+                  value={form.domain}
+                  onChange={(e) => setForm({ ...form, domain: e.target.value })}
+                />
+              </Field>
+              {columnSelect('source_column', 'Source text column')}
+              {columnSelect('target_column', 'Target text column')}
+              {columnSelect('domain_column', 'Domain column', true)}
+              {columnSelect('quality_column', 'Quality column', true)}
+              {columnSelect('document_id_column', 'Document ID column', true)}
+              <Field label={`Evaluation % (default ${defaults.data?.evaluation_percent ?? '—'})`}>
+                <Input
+                  type="number"
+                  step="0.1"
+                  placeholder={String(defaults.data?.evaluation_percent ?? '')}
+                  value={form.evaluation_percent}
+                  onChange={(e) => setForm({ ...form, evaluation_percent: e.target.value })}
+                />
+              </Field>
+              <Field label={`Max reserved (default ${defaults.data?.evaluation_max_samples ?? '—'})`}>
+                <Input
+                  type="number"
+                  placeholder={String(defaults.data?.evaluation_max_samples ?? '')}
+                  value={form.evaluation_max_samples}
+                  onChange={(e) => setForm({ ...form, evaluation_max_samples: e.target.value })}
+                />
+              </Field>
+              <Field label="Selector">
+                <Select
+                  value={form.evaluation_selector}
+                  onChange={(e) => setForm({ ...form, evaluation_selector: e.target.value })}
+                >
+                  <option value="">{defaults.data?.evaluation_selector ?? 'default'}</option>
+                  {defaults.data?.selectors
+                    .filter((name) => name !== defaults.data?.evaluation_selector)
+                    .map((name) => (
+                      <option key={name} value={name}>
+                        {name}
+                      </option>
+                    ))}
+                </Select>
+              </Field>
+              <Field label={`Seed (default ${defaults.data?.random_seed ?? '—'})`}>
+                <Input
+                  type="number"
+                  placeholder={String(defaults.data?.random_seed ?? '')}
+                  value={form.random_seed}
+                  onChange={(e) => setForm({ ...form, random_seed: e.target.value })}
+                />
+              </Field>
+              <Field label="Notes">
+                <Input
+                  value={form.notes}
+                  onChange={(e) => setForm({ ...form, notes: e.target.value })}
+                />
+              </Field>
+              <HStack vAlign="end">
+                <Button disabled={busy || !file}>
+                  {uploadProgress === null
+                    ? busy
+                      ? 'Preparing import…'
+                      : 'Import'
+                    : `Uploading ${Math.round(uploadProgress * 100)}%`}
+                </Button>
+              </HStack>
+            </Grid>
+
+            {effectiveSelector === 'contamination_safe' && (
+              <Text type="supporting" color="secondary">
+                {defaults.data?.policies.contamination_safe.description}{' '}
+                {defaults.data?.policies.contamination_safe.contamination.document_level_holdout === true
+                  ? 'Document holdout is enabled.'
+                  : 'Document holdout is disabled.'}
+              </Text>
+            )}
+
+            {uploadProgress !== null && (
+              <ProgressBar value={uploadProgress * 100} label="Uploading file" />
+            )}
+          </VStack>
         </form>
       </Card>
 
       {inspection && (
-        <Card className="mb-4">
-          <h2 className="mb-2 font-medium">
-            Detected format: <code>{inspection.format}</code>
-          </h2>
-          <DataTable
-            rows={inspection.preview}
-            columns={inspection.columns.map((c) => ({ key: c, header: c }))}
-          />
+        <Card>
+          <VStack gap={3}>
+            <Heading level={4}>
+              Detected format: <Text type="code">{inspection.format}</Text>
+            </Heading>
+            <DataTable
+              rows={inspection.preview}
+              columns={inspection.columns.map((c) => ({ key: c, header: c }))}
+            />
+          </VStack>
         </Card>
       )}
 
-      <h2 className="mb-2 font-medium">Recent batches</h2>
-      <DataTable
-        loading={batches.isLoading}
-        rows={batches.data as unknown as Row[]}
-        columns={[
-          { key: 'id', header: 'ID', width: '60px' },
-          { key: 'name', header: 'Name' },
-          { key: 'format', header: 'Format' },
-          { key: 'sample_count', header: 'Samples' },
-          {
-            key: 'progress',
-            header: 'Worker progress',
-            render: (r) => <ImportProgressView batch={r as unknown as Batch} />,
-          },
-          {
-            key: 'reserved',
-            header: 'Evaluation',
-            render: (r) =>
-              String(
-                (r.stats as { reservation?: { reserved?: number } })?.reservation?.reserved ?? '—',
-              ),
-          },
-          {
-            key: 'quarantined',
-            header: 'Quarantined',
-            render: (r) =>
-              String(
-                (r.stats as { reservation?: { quarantined?: number } })?.reservation?.quarantined ??
-                  0,
-              ),
-          },
-          {
-            key: 'splits',
-            header: 'Dev / test',
-            render: (r) => {
-              const splits = (r.stats as { reservation?: { selection?: { splits?: Record<string, number> } } })
-                ?.reservation?.selection?.splits
-              return splits ? `${splits.dev ?? 0} / ${splits.test ?? 0}` : '—'
+      <VStack gap={2}>
+        <Heading level={4}>Recent batches</Heading>
+        <DataTable
+          loading={batches.isLoading}
+          rows={batches.data as unknown as Row[]}
+          columns={[
+            { key: 'id', header: 'ID', width: '60px' },
+            { key: 'name', header: 'Name' },
+            { key: 'format', header: 'Format' },
+            { key: 'sample_count', header: 'Samples' },
+            {
+              key: 'progress',
+              header: 'Worker progress',
+              render: (r) => <ImportProgressView batch={r as unknown as Batch} />,
             },
-          },
-          {
-            key: 'gold',
-            header: 'Human verify',
-            render: (r) =>
-              String(
-                (r.stats as { reservation?: { selection?: { human_verify?: number } } })
-                  ?.reservation?.selection?.human_verify ?? '—',
-              ),
-          },
-          { key: 'status', header: 'Status', render: (r) => <Badge>{String(r.status)}</Badge> },
-          {
-            key: 'actions',
-            header: '',
-            render: (r) =>
-              r.status === 'failed' ? (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  disabled={retrying === Number(r.id)}
-                  onClick={() => void retryImport(Number(r.id))}
-                >
-                  {retrying === Number(r.id) ? 'Retrying…' : 'Retry'}
-                </Button>
-              ) : null,
-          },
-        ]}
-      />
-    </>
+            {
+              key: 'reserved',
+              header: 'Evaluation',
+              render: (r) =>
+                String(
+                  (r.stats as { reservation?: { reserved?: number } })?.reservation?.reserved ?? '—',
+                ),
+            },
+            {
+              key: 'quarantined',
+              header: 'Quarantined',
+              render: (r) =>
+                String(
+                  (r.stats as { reservation?: { quarantined?: number } })?.reservation?.quarantined ??
+                    0,
+                ),
+            },
+            {
+              key: 'splits',
+              header: 'Dev / test',
+              render: (r) => {
+                const splits = (r.stats as { reservation?: { selection?: { splits?: Record<string, number> } } })
+                  ?.reservation?.selection?.splits
+                return splits ? `${splits.dev ?? 0} / ${splits.test ?? 0}` : '—'
+              },
+            },
+            {
+              key: 'gold',
+              header: 'Human verify',
+              render: (r) =>
+                String(
+                  (r.stats as { reservation?: { selection?: { human_verify?: number } } })
+                    ?.reservation?.selection?.human_verify ?? '—',
+                ),
+            },
+            { key: 'status', header: 'Status', render: (r) => <Badge>{String(r.status)}</Badge> },
+            {
+              key: 'actions',
+              header: '',
+              render: (r) =>
+                r.status === 'failed' ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    disabled={retrying === Number(r.id)}
+                    onClick={() => void retryImport(Number(r.id))}
+                  >
+                    {retrying === Number(r.id) ? 'Retrying…' : 'Retry'}
+                  </Button>
+                ) : null,
+            },
+          ]}
+        />
+      </VStack>
+    </VStack>
   )
 }

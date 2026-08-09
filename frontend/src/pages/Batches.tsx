@@ -1,5 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
+import { VStack } from '@astryxdesign/core/Stack'
+import { Heading } from '@astryxdesign/core/Text'
 
 import { DataTable } from '@/components/DataTable'
 import { Badge, Button, Card, PageHeader } from '@/components/ui'
@@ -17,7 +19,7 @@ export default function Batches() {
   })
 
   return (
-    <>
+    <VStack gap={4}>
       <PageHeader title="Batches" subtitle="Immutable ingestions. Append only." />
       <DataTable
         loading={isLoading}
@@ -72,27 +74,29 @@ export default function Batches() {
       />
 
       {open !== null && (
-        <Card className="mt-4">
-          <h2 className="mb-3 font-medium">Batch {open} — first rows</h2>
-          <DataTable
-            loading={rows.isLoading}
-            rows={rows.data}
-            columns={[
-              { key: 'sample_id', header: 'Sample' },
-              { key: 'source_text', header: 'Source' },
-              { key: 'target_text', header: 'Target' },
-              { key: 'domain', header: 'Domain' },
-              { key: 'quality', header: 'Quality' },
-              { key: 'evaluation_split', header: 'Eval split' },
-              {
-                key: 'human_verify',
-                header: 'Human verify',
-                render: (r) => (r.human_verify === true ? 'yes' : '—'),
-              },
-            ]}
-          />
+        <Card>
+          <VStack gap={3}>
+            <Heading level={4}>Batch {open} — first rows</Heading>
+            <DataTable
+              loading={rows.isLoading}
+              rows={rows.data}
+              columns={[
+                { key: 'sample_id', header: 'Sample' },
+                { key: 'source_text', header: 'Source' },
+                { key: 'target_text', header: 'Target' },
+                { key: 'domain', header: 'Domain' },
+                { key: 'quality', header: 'Quality' },
+                { key: 'evaluation_split', header: 'Eval split' },
+                {
+                  key: 'human_verify',
+                  header: 'Human verify',
+                  render: (r) => (r.human_verify === true ? 'yes' : '—'),
+                },
+              ]}
+            />
+          </VStack>
         </Card>
       )}
-    </>
+    </VStack>
   )
 }

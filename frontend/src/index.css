@@ -1,15 +1,25 @@
-@import 'tailwindcss';
+@layer reset, theme, base, astryx-base, astryx-theme, components, utilities;
+
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/preflight.css" layer(base);
+@import "@astryxdesign/core/reset.css";
+@import "@astryxdesign/core/astryx.css";
+@import "@astryxdesign/theme-neutral/theme.css";
+@import "@astryxdesign/core/tailwind-theme.css";
+@import "tailwindcss/utilities.css" layer(utilities);
 
 :root {
   color-scheme: light;
 }
 
 body {
-  @apply bg-slate-50 text-slate-900 antialiased;
-  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  background-color: var(--color-background-body);
+  color: var(--color-text-primary);
+  font-family: var(--font-family-body);
+  margin: 0;
+  padding: 0;
 }
 
-/* Research tool: dense tables, no decoration. */
 table {
   font-variant-numeric: tabular-nums;
 }

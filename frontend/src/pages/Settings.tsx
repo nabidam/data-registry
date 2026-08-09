@@ -1,4 +1,8 @@
 import { useQuery } from '@tanstack/react-query'
+import { HStack, VStack } from '@astryxdesign/core/Stack'
+import { Grid } from '@astryxdesign/core/Grid'
+import { Text } from '@astryxdesign/core/Text'
+import { Spinner } from '@astryxdesign/core/Spinner'
 
 import { Card, PageHeader } from '@/components/ui'
 import { api } from '@/lib/api'
@@ -10,25 +14,27 @@ export default function Settings() {
   })
 
   return (
-    <>
+    <VStack gap={4}>
       <PageHeader
         title="Settings"
         subtitle="Read-only deployment configuration (set via environment variables)"
       />
       <Card>
         {isLoading ? (
-          <p className="text-sm text-slate-500">Loading…</p>
+          <VStack gap={4} hAlign="center" vAlign="center" style={{ padding: '2rem 0' }}>
+            <Spinner size="md" />
+          </VStack>
         ) : (
-          <dl className="grid gap-2 text-sm md:grid-cols-2">
+          <Grid columns={2} gap={3}>
             {Object.entries(data ?? {}).map(([key, value]) => (
-              <div key={key} className="flex justify-between gap-4 border-b border-slate-100 py-1">
-                <dt className="text-slate-500">{key}</dt>
-                <dd className="font-mono">{value ?? '—'}</dd>
-              </div>
+              <HStack key={key} vAlign="center" hAlign="between" style={{ borderBottom: '1px solid var(--color-border, #e2e8f0)', paddingBottom: '0.5rem' }}>
+                <Text type="supporting" color="secondary">{key}</Text>
+                <Text type="code">{value ?? '—'}</Text>
+              </HStack>
             ))}
-          </dl>
+          </Grid>
         )}
       </Card>
-    </>
+    </VStack>
   )
 }

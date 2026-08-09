@@ -1,4 +1,6 @@
 import { useState } from 'react'
+import { HStack, VStack } from '@astryxdesign/core/Stack'
+import { Grid } from '@astryxdesign/core/Grid'
 
 import { DataTable } from '@/components/DataTable'
 import { EditEntity } from '@/components/EditEntity'
@@ -17,41 +19,42 @@ export default function Sources() {
   const [editing, setEditing] = useState<Source | null>(null)
 
   return (
-    <>
+    <VStack gap={4}>
       <PageHeader title="Sources" subtitle="Where the data originated" />
       <ErrorBox error={create.error} />
 
-      <Card className="mb-4">
+      <Card>
         <form
-          className="grid gap-3 md:grid-cols-4"
           onSubmit={(e) => {
             e.preventDefault()
             create.mutate(form, { onSuccess: () => setForm({ ...form, name: '', description: '' }) })
           }}
         >
-          <Field label="Name">
-            <Input
-              required
-              value={form.name}
-              onChange={(e) => setForm({ ...form, name: e.target.value })}
-            />
-          </Field>
-          <Field label="Kind">
-            <Select value={form.kind} onChange={(e) => setForm({ ...form, kind: e.target.value })}>
-              {KINDS.map((k) => (
-                <option key={k}>{k}</option>
-              ))}
-            </Select>
-          </Field>
-          <Field label="Description">
-            <Input
-              value={form.description}
-              onChange={(e) => setForm({ ...form, description: e.target.value })}
-            />
-          </Field>
-          <div className="flex items-end">
-            <Button disabled={create.isPending}>Add source</Button>
-          </div>
+          <Grid columns={4} gap={3} align="end">
+            <Field label="Name">
+              <Input
+                required
+                value={form.name}
+                onChange={(e) => setForm({ ...form, name: e.target.value })}
+              />
+            </Field>
+            <Field label="Kind">
+              <Select value={form.kind} onChange={(e) => setForm({ ...form, kind: e.target.value })}>
+                {KINDS.map((k) => (
+                  <option key={k}>{k}</option>
+                ))}
+              </Select>
+            </Field>
+            <Field label="Description">
+              <Input
+                value={form.description}
+                onChange={(e) => setForm({ ...form, description: e.target.value })}
+              />
+            </Field>
+            <HStack vAlign="end">
+              <Button disabled={create.isPending}>Add source</Button>
+            </HStack>
+          </Grid>
         </form>
       </Card>
 
@@ -91,18 +94,18 @@ export default function Sources() {
             key: 'actions',
             header: '',
             render: (r) => (
-              <div className="flex gap-2">
+              <HStack gap={2}>
                 <Button variant="ghost" onClick={() => setEditing(r as unknown as Source)}>
                   Edit
                 </Button>
                 <Button variant="danger" onClick={() => remove.mutate(r.id as number)}>
                   Delete
                 </Button>
-              </div>
+              </HStack>
             ),
           },
         ]}
       />
-    </>
+    </VStack>
   )
 }

@@ -1,5 +1,9 @@
 import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
+import { HStack, VStack } from '@astryxdesign/core/Stack'
+import { Grid } from '@astryxdesign/core/Grid'
+import { Heading, Text } from '@astryxdesign/core/Text'
+import { CodeBlock } from '@astryxdesign/core/CodeBlock'
 
 import { DataTable } from '@/components/DataTable'
 import { Badge, Button, Card, ErrorBox, Field, Input, PageHeader, Select } from '@/components/ui'
@@ -8,7 +12,6 @@ import { api } from '@/lib/api'
 import type { Contamination, Dataset, Row, Snapshot, Split } from '@/types'
 
 export default function Snapshots() {
-  // Builds run in the background; poll while any snapshot is still building.
   const snapshots = useQuery({
     queryKey: ['snapshots', undefined],
     queryFn: () => api.get<Snapshot[]>('/snapshots'),
@@ -21,20 +24,18 @@ export default function Snapshots() {
   const remove = useRemove('snapshots')
   const [form, setForm] = useState({ name: '', dataset_id: '', split_id: '', seed: '42' })
   const [manifest, setManifest] = useState<Record<string, unknown> | null>(null)
-  // Samples reserved after this snapshot was built; history is never rewritten.
   const [contamination, setContamination] = useState<Contamination[] | null>(null)
 
   return (
-    <>
+    <VStack gap={4}>
       <PageHeader
         title="Snapshots"
         subtitle="Immutable exports of trainable samples: train / validation / test + manifest"
       />
       <ErrorBox error={create.error} />
 
-      <Card className="mb-4">
+      <Card>
         <form
-          className="grid gap-3 md:grid-cols-5"
           onSubmit={(e) => {
             e.preventDefault()
             create.mutate({
@@ -45,50 +46,52 @@ export default function Snapshots() {
             })
           }}
         >
-          <Field label="Name">
-            <Input
-              required
-              value={form.name}
-              onChange={(e) => setForm({ ...form, name: e.target.value })}
-            />
-          </Field>
-          <Field label="Dataset">
-            <Select
-              required
-              value={form.dataset_id}
-              onChange={(e) => setForm({ ...form, dataset_id: e.target.value })}
-            >
-              <option value="">select…</option>
-              {datasets.data?.map((d) => (
-                <option key={d.id} value={d.id}>
-                  {d.name}
-                </option>
-              ))}
-            </Select>
-          </Field>
-          <Field label="Split">
-            <Select
-              value={form.split_id}
-              onChange={(e) => setForm({ ...form, split_id: e.target.value })}
-            >
-              <option value="">default 90/5/5</option>
-              {splits.data?.map((s) => (
-                <option key={s.id} value={s.id}>
-                  #{s.id} {s.name} v{s.version}
-                </option>
-              ))}
-            </Select>
-          </Field>
-          <Field label="Seed (when no split)">
-            <Input
-              type="number"
-              value={form.seed}
-              onChange={(e) => setForm({ ...form, seed: e.target.value })}
-            />
-          </Field>
-          <div className="flex items-end">
-            <Button disabled={create.isPending}>Build snapshot</Button>
-          </div>
+          <Grid columns={5} gap={3} align="end">
+            <Field label="Name">
+              <Input
+                required
+                value={form.name}
+                onChange={(e) => setForm({ ...form, name: e.target.value })}
+              />
+            </Field>
+            <Field label="Dataset">
+              <Select
+                required
+                value={form.dataset_id}
+                onChange={(e) => setForm({ ...form, dataset_id: e.target.value })}
+              >
+                <option value="">select…</option>
+                {datasets.data?.map((d) => (
+                  <option key={d.id} value={d.id}>
+                    {d.name}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            <Field label="Split">
+              <Select
+                value={form.split_id}
+                onChange={(e) => setForm({ ...form, split_id: e.target.value })}
+              >
+                <option value="">default 90/5/5</option>
+                {splits.data?.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    #{s.id} {s.name} v{s.version}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            <Field label="Seed (when no split)">
+              <Input
+                type="number"
+                value={form.seed}
+                onChange={(e) => setForm({ ...form, seed: e.target.value })}
+              />
+            </Field>
+            <HStack vAlign="end">
+              <Button disabled={create.isPending}>Build snapshot</Button>
+            </HStack>
+          </Grid>
         </form>
       </Card>
 
@@ -116,7 +119,7 @@ export default function Snapshots() {
             key: 'actions',
             header: '',
             render: (r) => (
-              <div className="flex gap-2">
+              <HStack gap={2}>
                 <Button
                   variant="ghost"
                   onClick={async () =>
@@ -138,48 +141,52 @@ export default function Snapshots() {
                 <Button variant="danger" onClick={() => remove.mutate(r.id as number)}>
                   Delete
                 </Button>
-              </div>
+              </HStack>
             ),
           },
         ]}
       />
 
       {contamination && (
-        <Card className="mt-4">
-          <div className="mb-2 flex items-center justify-between">
-            <h2 className="font-medium">Historically contaminated samples</h2>
-            <Button variant="ghost" onClick={() => setContamination(null)}>
-              Close
-            </Button>
-          </div>
-          {contamination.length === 0 ? (
-            <p className="text-sm text-slate-500">
-              None: no sample in this snapshot was reserved for evaluation afterwards.
-            </p>
-          ) : (
-            <DataTable
-              rows={contamination as unknown as Row[]}
-              columns={[
-                { key: 'sample_count', header: 'Samples' },
-                { key: 'reason', header: 'Reason' },
-                { key: 'created_at', header: 'Detected' },
-              ]}
-            />
-          )}
+        <Card>
+          <VStack gap={3}>
+            <HStack vAlign="center" hAlign="between">
+              <Heading level={4}>Historically contaminated samples</Heading>
+              <Button variant="ghost" onClick={() => setContamination(null)}>
+                Close
+              </Button>
+            </HStack>
+            {contamination.length === 0 ? (
+              <Text type="supporting" color="secondary">
+                None: no sample in this snapshot was reserved for evaluation afterwards.
+              </Text>
+            ) : (
+              <DataTable
+                rows={contamination as unknown as Row[]}
+                columns={[
+                  { key: 'sample_count', header: 'Samples' },
+                  { key: 'reason', header: 'Reason' },
+                  { key: 'created_at', header: 'Detected' },
+                ]}
+              />
+            )}
+          </VStack>
         </Card>
       )}
 
       {manifest && (
-        <Card className="mt-4">
-          <div className="mb-2 flex items-center justify-between">
-            <h2 className="font-medium">manifest.json</h2>
-            <Button variant="ghost" onClick={() => setManifest(null)}>
-              Close
-            </Button>
-          </div>
-          <pre className="overflow-x-auto text-xs">{JSON.stringify(manifest, null, 2)}</pre>
+        <Card>
+          <VStack gap={3}>
+            <HStack vAlign="center" hAlign="between">
+              <Heading level={4}>manifest.json</Heading>
+              <Button variant="ghost" onClick={() => setManifest(null)}>
+                Close
+              </Button>
+            </HStack>
+            <CodeBlock language="json" code={JSON.stringify(manifest, null, 2)} />
+          </VStack>
         </Card>
       )}
-    </>
+    </VStack>
   )
 }

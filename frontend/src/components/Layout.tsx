@@ -1,4 +1,6 @@
-import { NavLink, Outlet } from 'react-router-dom'
+import { AppShell } from '@astryxdesign/core/AppShell'
+import { SideNav, SideNavHeading, SideNavSection, SideNavItem } from '@astryxdesign/core/SideNav'
+import { useLocation, useNavigate, Outlet } from 'react-router-dom'
 
 const NAV = [
   { to: '/', label: 'Dashboard' },
@@ -19,30 +21,43 @@ const NAV = [
 ]
 
 export default function Layout() {
+  const location = useLocation()
+  const navigate = useNavigate()
+
   return (
-    <div className="flex min-h-screen">
-      <aside className="w-56 shrink-0 border-r border-slate-200 bg-white">
-        <div className="px-4 py-4 text-sm font-semibold">MT Dataset Registry</div>
-        <nav className="flex flex-col gap-0.5 px-2 pb-4">
-          {NAV.map((item) => (
-            <NavLink
-              key={item.to}
-              to={item.to}
-              end={item.to === '/'}
-              className={({ isActive }) =>
-                `rounded-md px-3 py-1.5 text-sm ${
-                  isActive ? 'bg-slate-900 text-white' : 'text-slate-700 hover:bg-slate-100'
-                }`
-              }
-            >
-              {item.label}
-            </NavLink>
-          ))}
-        </nav>
-      </aside>
-      <main className="flex-1 p-6">
-        <Outlet />
-      </main>
-    </div>
+    <AppShell
+      contentPadding={6}
+      sideNav={
+        <SideNav
+          header={
+            <SideNavHeading
+              heading="MT Dataset Registry"
+              superheading="Machine Translation"
+              headingHref="/"
+            />
+          }
+        >
+          <SideNavSection title="Navigation" isHeaderHidden>
+            {NAV.map((item) => {
+              const isSelected =
+                item.to === '/'
+                  ? location.pathname === '/'
+                  : location.pathname.startsWith(item.to)
+              return (
+                <SideNavItem
+                  key={item.to}
+                  label={item.label}
+                  isSelected={isSelected}
+                  onClick={() => navigate(item.to)}
+                />
+              )
+            })}
+          </SideNavSection>
+        </SideNav>
+      }
+    >
+      <Outlet />
+    </AppShell>
   )
 }
+

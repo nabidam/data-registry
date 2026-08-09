@@ -1,5 +1,7 @@
 import { useState } from 'react'
-
+import { Heading } from '@astryxdesign/core/Text'
+import { HStack, VStack } from '@astryxdesign/core/Stack'
+import { Grid } from '@astryxdesign/core/Grid'
 import { Button, Card, ErrorBox, Field, Input, Select, Textarea } from '@/components/ui'
 
 export type EditField = {
@@ -10,80 +12,75 @@ export type EditField = {
   required?: boolean
 }
 
-/** Inline edit form for a single entity. Fields are strings only; callers
- *  translate them into the right payload shape before patching. */
 export function EditEntity({
+  title,
   fields,
   initial,
-  title,
-  error,
-  isSaving,
   onSave,
   onClose,
+  isSaving,
+  error,
 }: {
+  title: string
   fields: EditField[]
   initial: Record<string, unknown>
-  title: string
-  error?: unknown
-  isSaving?: boolean
   onSave: (values: Record<string, string>) => void
   onClose: () => void
+  isSaving?: boolean
+  error?: unknown
 }) {
   const [values, setValues] = useState<Record<string, string>>(() => {
-    const out: Record<string, string> = {}
-    for (const field of fields) out[field.key] = String(initial[field.key] ?? '')
-    return out
+    const init: Record<string, string> = {}
+    for (const f of fields) {
+      init[f.key] = String(initial[f.key] ?? '')
+    }
+    return init
   })
 
-  const set = (key: string, value: string) => setValues((current) => ({ ...current, [key]: value }))
+  const set = (key: string, value: string) => setValues((current: Record<string, string>) => ({ ...current, [key]: value }))
 
   return (
     <Card className="mb-4">
-      <div className="mb-3 flex items-center justify-between">
-        <h2 className="font-medium">{title}</h2>
-        <Button variant="ghost" onClick={onClose}>
-          Cancel
-        </Button>
-      </div>
-      <ErrorBox error={error} />
-      <form
-        className="grid gap-3 md:grid-cols-4"
-        onSubmit={(e) => {
-          e.preventDefault()
-          onSave(values)
-        }}
-      >
-        {fields.map((field) => (
-          <Field key={field.key} label={field.label}>
-            {field.type === 'select' ? (
-              <Select
-                required={field.required}
-                value={values[field.key]}
-                onChange={(e) => set(field.key, e.target.value)}
-              >
-                {field.options?.map((option) => (
-                  <option key={option}>{option}</option>
-                ))}
-              </Select>
-            ) : field.type === 'textarea' ? (
-              <Textarea
-                rows={3}
-                value={values[field.key]}
-                onChange={(e) => set(field.key, e.target.value)}
-              />
-            ) : (
-              <Input
-                required={field.required}
-                value={values[field.key]}
-                onChange={(e) => set(field.key, e.target.value)}
-              />
-            )}
-          </Field>
-        ))}
-        <div className="flex items-end">
-          <Button disabled={isSaving}>Save</Button>
-        </div>
-      </form>
+      <VStack gap={3}>
+        <HStack vAlign="center" hAlign="between">
+          <Heading level={4}>{title}</Heading>
+          <Button variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+        </HStack>
+        <ErrorBox error={error} />
+        <form
+          onSubmit={(e) => {
+            e.preventDefault()
+            onSave(values)
+          }}
+        >
+          <Grid columns={4} gap={3} align="end">
+            {fields.map((f) => (
+              <Field key={f.key} label={f.label}>
+                {f.type === 'select' ? (
+                  <Select value={values[f.key]} onChange={(e) => set(f.key, e.target.value)}>
+                    {(f.options ?? []).map((o) => (
+                      <option key={o}>{o}</option>
+                    ))}
+                  </Select>
+                ) : f.type === 'textarea' ? (
+                  <Textarea value={values[f.key]} onChange={(e) => set(f.key, e.target.value)} />
+                ) : (
+                  <Input
+                    required={f.required}
+                    value={values[f.key]}
+                    onChange={(e) => set(f.key, e.target.value)}
+                  />
+                )}
+              </Field>
+            ))}
+            <HStack vAlign="end">
+              <Button disabled={isSaving}>Save</Button>
+            </HStack>
+          </Grid>
+        </form>
+      </VStack>
     </Card>
   )
 }
