@@ -86,4 +86,35 @@ async def by_batch(session: AsyncSession = Depends(get_session)):
 
 @router.get("/sources")
 async def by_source(session: AsyncSession = Depends(get_session)):
-    return await _grouped(session, Sample.source_id)
+    stmt = (
+        select(Sample.source_id, Source.name.label("name"), func.count().label("count"))
+        .outerjoin(Source, Sample.source_id == Source.id)
+        .group_by(Sample.source_id, Source.name)
+        .order_by(func.count().desc())
+        .limit(50)
+    )
+    return [dict(r) for r in (await session.execute(stmt)).mappings()]
+
+
+@router.get("/datasets")
+async def by_dataset(session: AsyncSession = Depends(get_session)):
+    rows = await session.execute(
+        select(DatasetDefinition.id, DatasetDefinition.name).order_by(DatasetDefinition.id.desc()).limit(50)
+    )
+    return [dict(r) for r in rows.mappings()]
+
+
+@router.get("/snapshots")
+async def by_snapshot(session: AsyncSession = Depends(get_session)):
+    rows = await session.execute(
+        select(Snapshot.id, Snapshot.name, Snapshot.total_samples).order_by(Snapshot.id.desc()).limit(50)
+    )
+    return [dict(r) for r in rows.mappings()]
+
+
+@router.get("/evaluation-sets")
+async def by_eval_set(session: AsyncSession = Depends(get_session)):
+    rows = await session.execute(
+        select(EvaluationSet.id, EvaluationSet.name, EvaluationSet.sample_count).order_by(EvaluationSet.id.desc()).limit(50)
+    )
+    return [dict(r) for r in rows.mappings()]

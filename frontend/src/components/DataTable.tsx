@@ -1,7 +1,6 @@
 import type { ReactNode } from 'react'
 import { Table, type TableColumn } from '@astryxdesign/core/Table'
 import { EmptyState } from '@astryxdesign/core/EmptyState'
-import { Spinner } from '@astryxdesign/core/Spinner'
 import { VStack } from '@astryxdesign/core/Stack'
 
 export type Column<T> = {
@@ -24,8 +23,11 @@ export function DataTable<T extends Record<string, unknown>>({
 }) {
   if (loading) {
     return (
-      <VStack gap={4} hAlign="center" vAlign="center" style={{ padding: '3rem 0' }}>
-        <Spinner size="lg" />
+      <VStack gap={3} width="100%">
+        <div className="w-full h-9 bg-slate-800/60 rounded animate-pulse" />
+        <div className="w-full h-11 bg-slate-800/30 rounded animate-pulse" />
+        <div className="w-full h-11 bg-slate-800/20 rounded animate-pulse" />
+        <div className="w-full h-11 bg-slate-800/20 rounded animate-pulse" />
       </VStack>
     )
   }
@@ -39,10 +41,13 @@ export function DataTable<T extends Record<string, unknown>>({
     )
   }
 
-  const normalizedRows = rows.map((row, index) => ({
-    id: row.id ?? row.sample_id ?? row.snapshot_id ?? row.source_id ?? index,
-    ...row,
-  }))
+  const normalizedRows = rows.map((row, index) => {
+    const compositeKey = row.id ?? row.sample_id ?? row.snapshot_id ?? row.source_id ?? (row.src_lang && row.tgt_lang ? `${row.src_lang}_${row.tgt_lang}` : index)
+    return {
+      id: compositeKey,
+      ...row,
+    }
+  })
 
   const tableColumns: TableColumn<(typeof normalizedRows)[number]>[] = columns.map((col) => ({
     key: col.key,
@@ -50,7 +55,13 @@ export function DataTable<T extends Record<string, unknown>>({
     width: col.width ? (col.width as any) : undefined,
     renderCell: col.render
       ? (row) => col.render!(row as T)
-      : (row) => String((row as Record<string, unknown>)[col.key] ?? ''),
+      : (row) => {
+          const val = (row as Record<string, unknown>)[col.key]
+          if (typeof val === 'number') {
+            return val.toLocaleString()
+          }
+          return String(val ?? '')
+        },
   }))
 
   return (

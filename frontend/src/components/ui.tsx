@@ -27,14 +27,14 @@ export function PageHeader({
     <VStack gap={2} style={{ marginBottom: '1.5rem' }}>
       <HStack vAlign="center" hAlign="between">
         <VStack gap={1}>
-          <Heading level={2}>{title}</Heading>
+          <Heading level={1}>{title}</Heading>
           {subtitle && (
             <Text type="supporting" color="secondary">
               {subtitle}
             </Text>
           )}
         </VStack>
-        {actions && <HStack gap={2}>{actions}</HStack>}
+        {actions && <HStack gap={2} vAlign="center">{actions}</HStack>}
       </HStack>
     </VStack>
   )
@@ -58,15 +58,52 @@ export function Card({
   )
 }
 
-export function Stat({ label, value }: { label: string; value: ReactNode }) {
+export function Stat({
+  label,
+  value,
+  loading,
+  variant = 'normal',
+}: {
+  label: string
+  value: ReactNode
+  loading?: boolean
+  variant?: 'normal' | 'warning' | 'danger'
+}) {
+  const isDanger = variant === 'danger'
+  const isWarning = variant === 'warning'
+
   return (
-    <AstryxCard width="100%" padding={4}>
+    <AstryxCard
+      width="100%"
+      padding={4}
+      style={{
+        borderColor: isDanger
+          ? 'rgba(239, 68, 68, 0.4)'
+          : isWarning
+          ? 'rgba(245, 158, 11, 0.4)'
+          : undefined,
+        backgroundColor: isDanger
+          ? 'rgba(239, 68, 68, 0.05)'
+          : isWarning
+          ? 'rgba(245, 158, 11, 0.05)'
+          : undefined,
+      }}
+    >
       <VStack gap={1}>
-        <Text type="supporting" color="secondary" weight="medium">
-          {label.toUpperCase()}
+        <Text
+          type="supporting"
+          color="secondary"
+          weight="medium"
+          style={{ color: isDanger ? '#ef4444' : isWarning ? '#f59e0b' : undefined }}
+        >
+          {label}
         </Text>
         <Heading level={3}>
-          {value}
+          {loading ? (
+            <span className="inline-block w-20 h-7 bg-slate-700/50 animate-pulse rounded" />
+          ) : (
+            value
+          )}
         </Heading>
       </VStack>
     </AstryxCard>
