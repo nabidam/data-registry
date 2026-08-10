@@ -14,6 +14,10 @@ from services.dataset_builder.builder import (
     preview,
     statistics,
 )
+from services.evaluation.reservation_config import (
+    load_contamination_safe_config,
+    validate_policy,
+)
 
 router = APIRouter(prefix="/datasets", tags=["datasets"])
 
@@ -170,6 +174,13 @@ async def create_dataset_reservation(
     session: AsyncSession = Depends(get_session),
 ):
     await _get(session, dataset_id)
+    if payload.selector == "contamination_safe":
+        # Reject a broken policy now rather than after the worker has spent an
+        # hour on selection and then marked the reservation failed.
+        try:
+            validate_policy(load_contamination_safe_config())
+        except ValueError as exc:
+            raise BadRequest(str(exc)) from exc
     await lock_allocation_boundary(session)
     active = await session.scalar(
         select(DatasetReservation.id).where(

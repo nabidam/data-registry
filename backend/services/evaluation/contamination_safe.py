@@ -39,18 +39,24 @@ from services.evaluation.language_profiles import (
 )
 from services.evaluation.language_profiles import pair_key as make_pair_key
 from services.evaluation.language_profiles import resolve_pair
-from services.evaluation.reservation_config import resolve_pair_policy
+from services.evaluation.reservation_config import (
+    COMPARISON_SCOPES,
+    DOCUMENT_NAMESPACES,
+    resolve_pair_policy,
+    validate_policy,
+)
 
 SelectionProgress = Callable[[str, str, int | None, int | None, float | None], None]
 log = logging.getLogger(__name__)
 
 # Comparison scopes decide which rows may be compared during the contamination
 # scan. See config/evaluation_reservation.yaml for the operator-facing wording.
+# The tuple itself lives in reservation_config so policy validation can reach it
+# without importing this module and its heavy dependencies.
 SCOPE_PAIR = "pair"
 SCOPE_SOURCE_LANGUAGE = "source_language"
 SCOPE_TARGET_LANGUAGE = "target_language"
 SCOPE_ANY = "any"
-COMPARISON_SCOPES = (SCOPE_PAIR, SCOPE_SOURCE_LANGUAGE, SCOPE_TARGET_LANGUAGE, SCOPE_ANY)
 
 # Columns the selector and scan read. A frame that lacks one (an older Parquet
 # shard, or a caller that projected it away) is backfilled with nulls, which
@@ -247,11 +253,22 @@ def _document_id(row: dict[str, Any], separator: str, namespace: str = "source")
         return f"src{row.get('source_id')}:{document}"
     if namespace == "batch":
         return f"batch{row.get('batch_id')}:{document}"
-    return document
+    if namespace == "none":
+        return document
+    # Never fall through silently: an unrecognised namespace would quietly return
+    # un-namespaced IDs and reintroduce cross-corpus document collisions.
+    raise ValueError(
+        f"unknown document namespace {namespace!r}; available: {list(DOCUMENT_NAMESPACES)}"
+    )
 
 
 def _document_namespace(config: dict[str, Any]) -> str:
-    return str(config.get("contamination", {}).get("document_namespace", "source"))
+    namespace = str(config.get("contamination", {}).get("document_namespace", "source"))
+    if namespace not in DOCUMENT_NAMESPACES:
+        raise ValueError(
+            f"unknown document namespace {namespace!r}; available: {list(DOCUMENT_NAMESPACES)}"
+        )
+    return namespace
 
 
 def _bucket(token_count: int, edges: list[int]) -> str:
@@ -322,6 +339,15 @@ def _annotate(records: list[dict[str, Any]], config: dict[str, Any]) -> list[_Ro
                 source_key=" ".join(tokens),
                 target_key=profile.target_key(target),
             )
+    # Callers index this list positionally against ``records``. A missing slot
+    # would silently shift every later index onto the wrong sample, so refuse
+    # rather than return a shorter list.
+    if any(row is None for row in annotated):
+        missing = [index for index, row in enumerate(annotated) if row is None]
+        raise RuntimeError(
+            f"annotation left {len(missing)} of {len(records)} rows unassigned "
+            f"(first at index {missing[0]}); refusing to return a misaligned frame"
+        )
     return [row for row in annotated if row is not None]
 
 
@@ -606,6 +632,7 @@ def prepare_contamination_reference(
     left target-gated rows compared on a side that could not confirm them: full
     transformer cost for a decision that was structurally unable to fire.
     """
+    validate_policy(config)
     records = _records(selected_rows)
     separator = str(config.get("input", {}).get("id_separator", ":"))
     contamination = config["contamination"]
@@ -1440,6 +1467,9 @@ def select(
     """Run every source-pipeline stage and translate its outputs to registry state."""
     log.info("Starting Contamination Safe 'select' process...")
     selection_started = time.perf_counter()
+    # Before the model loads and before a single row is embedded: a bad policy
+    # must not be discovered hours into an import.
+    validate_policy(config)
     records = _records(rows)
     if target <= 0 or not records:
         return SelectionResult(
