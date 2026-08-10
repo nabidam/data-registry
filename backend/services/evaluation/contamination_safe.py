@@ -4,6 +4,15 @@ This ports the selection stages from the supplied ``build_test_set.py`` into
 immutable batch ingestion.  Rather than emitting duplicate train/dev/test CSVs,
 the registry retains split and gold annotations in batch Parquet, reserves only
 evaluation rows, and quarantines every row excluded to prevent leakage.
+
+Every stage here is language-pair scoped.  Rows carry a ``pair_key`` derived from
+their ``src_lang``/``tgt_lang``, and deduplication, quotas, document holdout, and
+contamination comparison all group by it.  The rule is that each pair protects
+itself by default; comparing across pairs is an explicit ``comparison_scope``
+choice, because it changes what "contamination" means and can remove rows another
+pair considers valid.  Language-specific behaviour — normalization, expected
+script, acronym and unit detection, and which features are measurable at all —
+lives in ``language_profiles``, not here.
 """
 
 from __future__ import annotations
@@ -13,36 +22,110 @@ import json
 import logging
 import math
 import random
-import re
 import time
-import unicodedata
 from collections import Counter, defaultdict
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import polars as pl
 
 from core.config import settings
+from services.evaluation.language_profiles import (
+    ALL_FEATURES,
+    FEATURE_RARE_TERM,
+    PairProfile,
+)
+from services.evaluation.language_profiles import pair_key as make_pair_key
+from services.evaluation.language_profiles import resolve_pair
+from services.evaluation.reservation_config import resolve_pair_policy
 
 SelectionProgress = Callable[[str, str, int | None, int | None, float | None], None]
 log = logging.getLogger(__name__)
 
-TOKEN_RE = re.compile(r"\w+", re.UNICODE)
-MATH_RE = re.compile(
-    r"(\$[^$]+\$|\\\(|\\\[|\\frac|\\sum|\\int|\\alpha|\\beta|\\gamma|\\lambda|\\sigma"
-    r"|[=<>≤≥±∓×÷√∞∈∉⊂⊆∪∩∑∏∫∂∇Δ∆]|\b[a-zA-Z]\s*\^\s*[0-9n]|\b[xyz]\s*=)"
+# Comparison scopes decide which rows may be compared during the contamination
+# scan. See config/evaluation_reservation.yaml for the operator-facing wording.
+SCOPE_PAIR = "pair"
+SCOPE_SOURCE_LANGUAGE = "source_language"
+SCOPE_TARGET_LANGUAGE = "target_language"
+SCOPE_ANY = "any"
+COMPARISON_SCOPES = (SCOPE_PAIR, SCOPE_SOURCE_LANGUAGE, SCOPE_TARGET_LANGUAGE, SCOPE_ANY)
+
+# Columns the selector and scan read. A frame that lacks one (an older Parquet
+# shard, or a caller that projected it away) is backfilled with nulls, which
+# resolves to the fallback language profile rather than raising.
+_ROW_COLUMNS = (
+    "sample_id",
+    "source_text",
+    "target_text",
+    "domain",
+    "document_id",
+    "src_lang",
+    "tgt_lang",
+    "source_id",
+    "batch_id",
 )
-NUM_UNIT_RE = re.compile(
-    r"\b\d+(\.\d+)?\s*(%|mm|cm|km|kg|mg|g|ml|l|s|ms|hz|khz|mhz|ghz|k|°c|°f|"
-    r"kpa|mpa|mol|ppm|db|nm|µm|um|ev|kev|mev|gev|w|kw|mw|v|mv|a|ma)\b",
-    re.IGNORECASE,
-)
-STAT_RE = re.compile(r"\b[pP]\s*[<>=]\s*0?\.\d+|\bn\s*=\s*\d+|\bCI\b|\br\s*=\s*[-0.]|\bF\(\d")
-ACRONYM_RE = re.compile(r"\b[A-Z]{2,6}s?\b")
-PERSIAN_CHAR_RE = re.compile(r"[\u0600-\u06FF]")
-LATIN_CHAR_RE = re.compile(r"[A-Za-z]")
+
+
+def _records(rows: pl.DataFrame) -> list[dict[str, Any]]:
+    """Project the columns the pipeline needs, tolerating frames that lack some."""
+    present = [column for column in _ROW_COLUMNS if column in rows.columns]
+    missing = [column for column in _ROW_COLUMNS if column not in rows.columns]
+    frame = rows.select(present)
+    if missing:
+        frame = frame.with_columns(
+            [pl.lit(None, dtype=pl.Utf8).alias(column) for column in missing]
+        )
+    return frame.to_dicts()
+
+
+def _profile_for(record: dict[str, Any]) -> PairProfile:
+    return resolve_pair(record.get("src_lang"), record.get("tgt_lang"))
+
+
+def comparison_scope(config: dict[str, Any], override: str | None = None) -> str:
+    """Resolve and validate the comparison scope, preferring an explicit override."""
+    scope = override or str(config.get("contamination", {}).get("comparison_scope", SCOPE_PAIR))
+    if scope not in COMPARISON_SCOPES:
+        raise ValueError(
+            f"unknown contamination comparison scope {scope!r}; "
+            f"available: {list(COMPARISON_SCOPES)}"
+        )
+    return scope
+
+
+def _group_key(scope: str, src_lang: str | None, tgt_lang: str | None) -> str:
+    """The identity two rows must share before they may be compared at all."""
+    source, target = make_pair_key(src_lang, tgt_lang).split("-", 1)
+    if scope == SCOPE_PAIR:
+        return f"{source}-{target}"
+    if scope == SCOPE_SOURCE_LANGUAGE:
+        return f"{source}-*"
+    if scope == SCOPE_TARGET_LANGUAGE:
+        return f"*-{target}"
+    return "*"
+
+
+def _side_thresholds(scope: str, contamination: dict[str, Any]) -> tuple[float, float]:
+    """Cosine thresholds for the (source, target) sides under one scope.
+
+    A side whose language the scope pins is a monolingual comparison and keeps the
+    calibrated ``near_dup_cosine_threshold``.  A side the scope leaves free may
+    compare two different languages, where LaBSE places an ordinary translation
+    and its source around 0.85-0.95; that side needs the stricter cross-lingual
+    threshold so equivalence is not mistaken for duplication.
+    """
+    same = float(contamination.get("near_dup_cosine_threshold", 0.92))
+    cross = float(contamination.get("cross_lingual_cosine_threshold", 0.97))
+    if scope == SCOPE_PAIR:
+        return same, same
+    if scope == SCOPE_SOURCE_LANGUAGE:
+        return same, cross
+    if scope == SCOPE_TARGET_LANGUAGE:
+        return cross, same
+    return cross, cross
+
 
 
 @dataclass(frozen=True)
@@ -58,16 +141,37 @@ class SelectionResult:
 
 
 @dataclass
+class _ReferenceGroup:
+    """Reserved rows that one comparison group may be checked against."""
+
+    source_keys: set[str] = field(default_factory=set)
+    target_keys: set[str] = field(default_factory=set)
+    document_ids: set[str] = field(default_factory=set)
+    source_shingles: set[str] = field(default_factory=set)
+    target_shingles: set[str] = field(default_factory=set)
+    source_texts: list[str] = field(default_factory=list)
+    target_texts: list[str] = field(default_factory=list)
+    source_embeddings: Any = None
+    target_embeddings: Any = None
+
+
+@dataclass
 class ContaminationReference:
-    """Selected evaluation rows prepared for a bounded full-corpus scan."""
+    """Selected evaluation rows prepared for a bounded full-corpus scan.
+
+    Rows are bucketed by comparison group, so a scanned row is only ever compared
+    with reserved rows it is allowed to be compared with. ``global_target_keys``
+    sits outside the grouping: an identical target string is output the model
+    would memorize regardless of which source language produced it, so exact
+    target duplication is checked across every pair.
+    """
 
     selected_ids: set[int]
-    source_keys: set[str]
-    document_ids: set[str]
-    embeddings: Any
-    source_prefilter_shingles: set[str]
-    target_prefilter_shingles: set[str]
-    encoder: Any = None
+    comparison_scope: str
+    groups: dict[str, _ReferenceGroup]
+    global_target_keys: set[str]
+    source_encoder: Any = None
+    target_encoder: Any = None
 
 
 @dataclass(frozen=True)
@@ -76,6 +180,8 @@ class ContaminationScanResult:
     exact_or_document_rows: int
     semantic_prefilter_rows: int
     semantic_checked_rows: int
+    exact_target_rows: int = 0
+
 
 
 _MODEL_CACHE: dict[tuple[str, str], Any] = {}
@@ -105,17 +211,47 @@ class _Row:
     length_bucket: str
     rare_term_score: float
     flags: dict[str, bool]
+    src_lang: str
+    tgt_lang: str
+    pair_key: str
+    profile: PairProfile
+    source_key: str
+    target_key: str
 
 
-def _tokens(text: str) -> list[str]:
-    return TOKEN_RE.findall(unicodedata.normalize("NFKC", text).lower())
+def _tokens(text: str, profile: PairProfile | None = None, *, side: str = "source") -> list[str]:
+    """Tokenize with the language's own normalization.
+
+    ``profile`` is optional so callers that genuinely have no language context
+    (an ad-hoc frame missing ``src_lang``) still get the previous behaviour via
+    the fallback profile rather than an error.
+    """
+    resolved = profile or resolve_pair(None, None)
+    return resolved.source_tokens(text) if side == "source" else resolved.target_tokens(text)
 
 
-def _document_id(row: dict[str, Any], separator: str) -> str:
+def _document_id(row: dict[str, Any], separator: str, namespace: str = "source") -> str:
+    """Namespaced document identity.
+
+    Importers rarely emit globally unique document IDs, so a registry-wide scan
+    would otherwise treat "doc:1" from two unrelated corpora as one document and
+    hold out both. Namespacing by ``source_id`` keeps cross-batch holdout working
+    when the same corpus is re-imported, which is the case the holdout exists for,
+    while separating corpora that merely reused an ID.
+    """
     value = row.get("document_id")
     if value in (None, ""):
         return f"sample:{row['sample_id']}"
-    return str(value).split(separator, 1)[0]
+    document = str(value).split(separator, 1)[0]
+    if namespace == "source":
+        return f"src{row.get('source_id')}:{document}"
+    if namespace == "batch":
+        return f"batch{row.get('batch_id')}:{document}"
+    return document
+
+
+def _document_namespace(config: dict[str, Any]) -> str:
+    return str(config.get("contamination", {}).get("document_namespace", "source"))
 
 
 def _bucket(token_count: int, edges: list[int]) -> str:
@@ -126,57 +262,81 @@ def _bucket(token_count: int, edges: list[int]) -> str:
 
 
 def _annotate(records: list[dict[str, Any]], config: dict[str, Any]) -> list[_Row]:
-    selection = config["selection"]
-    token_lists = [_tokens(str(record["source_text"])) for record in records]
-    frequency: Counter[str] = Counter()
-    for tokens in token_lists:
-        frequency.update(set(tokens))
-    rare_max = int(config["features"]["rare_token_max_count"])
-    rare_scores = [
-        sum(frequency[token] <= rare_max for token in tokens) / len(tokens) if tokens else 0.0
-        for tokens in token_lists
-    ]
-    ordered = sorted(rare_scores)
-    quantile = float(selection["rare_term_top_quantile"])
-    rare_threshold = ordered[min(len(ordered) - 1, int(quantile * len(ordered)))]
-    edges = [int(edge) for edge in selection["length_buckets"]]
-    separator = str(config.get("input", {}).get("id_separator", ":"))
+    """Annotate rows one language pair at a time.
 
-    annotated: list[_Row] = []
-    for record, tokens, rare_score in zip(records, token_lists, rare_scores, strict=True):
-        source = str(record["source_text"])
-        target = str(record["target_text"])
-        annotated.append(
-            _Row(
+    Rare-term scoring compares a token against the frequency of that token in the
+    corpus, which is only meaningful inside one language: pooling Russian and
+    English tokens into one table would make every Russian token look rare purely
+    because English rows outnumber it. Length buckets are likewise per pair, since
+    the edges count source tokens and languages differ in token density.
+    """
+    separator = str(config.get("input", {}).get("id_separator", ":"))
+    namespace = _document_namespace(config)
+    by_pair: dict[str, list[int]] = defaultdict(list)
+    profiles: dict[str, PairProfile] = {}
+    for index, record in enumerate(records):
+        profile = _profile_for(record)
+        profiles[profile.pair_key] = profile
+        by_pair[profile.pair_key].append(index)
+
+    annotated: list[_Row | None] = [None] * len(records)
+    for key, indexes in by_pair.items():
+        profile = profiles[key]
+        policy = resolve_pair_policy(config, key)
+        selection = policy["selection"]
+        edges = [int(edge) for edge in selection["length_buckets"]]
+        rare_max = int(policy["features"]["rare_token_max_count"])
+
+        token_lists = [profile.source_tokens(str(records[index]["source_text"])) for index in indexes]
+        frequency: Counter[str] = Counter()
+        for tokens in token_lists:
+            frequency.update(set(tokens))
+        rare_scores = [
+            sum(frequency[token] <= rare_max for token in tokens) / len(tokens) if tokens else 0.0
+            for tokens in token_lists
+        ]
+        ordered = sorted(rare_scores)
+        quantile = float(selection["rare_term_top_quantile"])
+        rare_threshold = ordered[min(len(ordered) - 1, int(quantile * len(ordered)))]
+
+        for index, tokens, rare_score in zip(indexes, token_lists, rare_scores, strict=True):
+            record = records[index]
+            source = str(record["source_text"])
+            target = str(record["target_text"])
+            flags = profile.flags(source, target)
+            flags[FEATURE_RARE_TERM] = rare_score >= rare_threshold
+            annotated[index] = _Row(
                 sample_id=int(record["sample_id"]),
                 source=source,
                 target=target,
                 domain=str(record.get("domain") or "unknown"),
-                document_id=_document_id(record, separator),
+                document_id=_document_id(record, separator, namespace),
                 n_tokens=len(tokens),
                 length_bucket=_bucket(len(tokens), edges),
                 rare_term_score=rare_score,
-                flags={
-                    "has_math": bool(MATH_RE.search(source)),
-                    "has_numbers_units": bool(
-                        NUM_UNIT_RE.search(source) or STAT_RE.search(source)
-                    ),
-                    "has_acronyms": bool(ACRONYM_RE.search(source)),
-                    "has_mixed_script": bool(
-                        LATIN_CHAR_RE.search(target) or PERSIAN_CHAR_RE.search(source)
-                    ),
-                    "is_rare_term": rare_score >= rare_threshold,
-                },
+                flags=flags,
+                src_lang=profile.src_lang,
+                tgt_lang=profile.tgt_lang,
+                pair_key=key,
+                profile=profile,
+                source_key=" ".join(tokens),
+                target_key=profile.target_key(target),
             )
-        )
-    return annotated
+    return [row for row in annotated if row is not None]
 
 
-def _shingles(text: str, size: int = 3) -> set[str]:
-    tokens = _tokens(text)
+def _shingles(
+    text: str,
+    size: int = 3,
+    profile: PairProfile | None = None,
+    *,
+    side: str = "source",
+) -> set[str]:
+    tokens = _tokens(text, profile, side=side)
     if len(tokens) < size:
         return {" ".join(tokens)} if tokens else set()
     return {" ".join(tokens[index : index + size]) for index in range(len(tokens) - size + 1)}
+
 
 
 def _require_evaluation_group() -> None:
@@ -195,12 +355,19 @@ def _require_evaluation_group() -> None:
 
 
 def _dedup_exact(rows: list[_Row], indexes: list[int]) -> tuple[list[int], set[int]]:
-    seen: set[str] = set()
+    """Drop repeated source sentences within a language pair.
+
+    The key carries the pair so a batch holding several pairs cannot delete a
+    valid ``en-de`` row because an ``en-fa`` row shares its English source. Those
+    are two different training examples, not a duplicate.
+    """
+    seen: set[tuple[str, str]] = set()
     kept: list[int] = []
     dropped: set[int] = set()
     for index in indexes:
-        key = " ".join(_tokens(rows[index].source))
-        if key and key not in seen:
+        row = rows[index]
+        key = (row.pair_key, row.source_key)
+        if row.source_key and key not in seen:
             seen.add(key)
             kept.append(index)
         else:
@@ -216,14 +383,22 @@ def _dedup_minhash(
 ) -> tuple[list[int], set[int]]:
     from datasketch import MinHash, MinHashLSH
 
-    lsh = MinHashLSH(threshold=threshold, num_perm=128)
+    # One index per pair: near-duplicate shingle overlap between two different
+    # source languages is not duplication, and pooling them would let a frequent
+    # pair evict rows from a smaller one.
+    indexes_by_pair: dict[str, Any] = {}
     kept: list[int] = []
     dropped: set[int] = set()
     started = time.perf_counter()
     log.info("MinHash dedup: checking %s candidates (threshold=%s)", len(indexes), threshold)
     for position, index in enumerate(indexes, start=1):
+        row = rows[index]
+        lsh = indexes_by_pair.get(row.pair_key)
+        if lsh is None:
+            lsh = MinHashLSH(threshold=threshold, num_perm=128)
+            indexes_by_pair[row.pair_key] = lsh
         signature = MinHash(num_perm=128)
-        for shingle in _shingles(rows[index].source):
+        for shingle in _shingles(row.source, 3, row.profile):
             signature.update(shingle.encode("utf-8"))
         if lsh.query(signature):
             dropped.add(index)
@@ -250,7 +425,11 @@ def _dedup_minhash(
 
 def _cache_paths(texts: list[str], config: dict[str, Any]) -> tuple[Path | None, str]:
     configured = config["embeddings"].get("cache_path")
-    digest = hashlib.sha256("\n".join(texts).encode("utf-8")).hexdigest()
+    # The embedding backend is part of the identity of a cached vector: the same
+    # texts encoded by LaBSE and by TF-IDF+SVD are different arrays of different
+    # widths, and reusing one for the other silently corrupts every similarity.
+    backend = json.dumps(config["embeddings"], sort_keys=True, default=str)
+    digest = hashlib.sha256(f"{backend}\n{chr(10).join(texts)}".encode()).hexdigest()
     if not configured:
         return None, digest
     path = Path(str(configured))
@@ -417,54 +596,134 @@ def prepare_contamination_reference(
     selected_rows: pl.DataFrame,
     config: dict[str, Any],
     progress: SelectionProgress | None = None,
+    *,
+    scope: str | None = None,
 ) -> ContaminationReference:
-    """Prepare reserved rows for streaming checks against the complete corpus."""
-    records = selected_rows.select(
-        "sample_id", "source_text", "target_text", "document_id"
-    ).to_dicts()
-    separator = str(config.get("input", {}).get("id_separator", ":"))
-    selected_ids = {int(record["sample_id"]) for record in records}
-    source_keys = {" ".join(_tokens(str(record["source_text"]))) for record in records}
-    document_ids = (
-        {_document_id(record, separator) for record in records}
-        if config["contamination"]["document_level_holdout"]
-        else set()
-    )
-    source_texts = [str(record["source_text"]) for record in records]
-    target_texts = [str(record["target_text"]) for record in records]
-    prefilter_size = max(
-        1, int(config["contamination"].get("semantic_prefilter_shingle_size", 3))
-    )
-    source_prefilter_shingles = {
-        shingle for text in source_texts for shingle in _shingles(text, prefilter_size)
-    }
-    target_prefilter_shingles = {
-        shingle for text in target_texts for shingle in _shingles(text, prefilter_size)
-    }
+    """Prepare reserved rows for streaming checks against the complete corpus.
 
+    Both sides are embedded. The scan gates candidates on source *and* target
+    shingle overlap, so resolving every candidate against source embeddings alone
+    left target-gated rows compared on a side that could not confirm them: full
+    transformer cost for a decision that was structurally unable to fire.
+    """
+    records = _records(selected_rows)
+    separator = str(config.get("input", {}).get("id_separator", ":"))
+    contamination = config["contamination"]
+    namespace = _document_namespace(config)
+    resolved_scope = comparison_scope(config, scope)
+    prefilter_size = max(1, int(contamination.get("semantic_prefilter_shingle_size", 3)))
+    hold_documents = bool(contamination["document_level_holdout"])
+
+    selected_ids: set[int] = set()
+    global_target_keys: set[str] = set()
+    groups: dict[str, _ReferenceGroup] = defaultdict(_ReferenceGroup)
+    for record in records:
+        profile = _profile_for(record)
+        source = str(record["source_text"])
+        target = str(record["target_text"])
+        selected_ids.add(int(record["sample_id"]))
+        target_key = profile.target_key(target)
+        global_target_keys.add(target_key)
+
+        group = groups[_group_key(resolved_scope, record.get("src_lang"), record.get("tgt_lang"))]
+        group.source_keys.add(profile.source_key(source))
+        group.target_keys.add(target_key)
+        if hold_documents:
+            group.document_ids.add(_document_id(record, separator, namespace))
+        group.source_shingles.update(_shingles(source, prefilter_size, profile))
+        group.target_shingles.update(_shingles(target, prefilter_size, profile, side="target"))
+        group.source_texts.append(source)
+        group.target_texts.append(target)
+
+    source_encoder = None
+    target_encoder = None
     if config["embeddings"]["enabled"]:
-        embeddings = _encode_labse(
-            source_texts,
-            config,
-            progress,
-            stage="reference_embeddings",
-        )
-        encoder = None
+        for key, group in groups.items():
+            group.source_embeddings = _encode_labse(
+                group.source_texts, config, progress, stage=f"reference_embeddings[{key}]"
+            )
+            group.target_embeddings = _encode_labse(
+                group.target_texts, config, progress, stage=f"reference_target_embeddings[{key}]"
+            )
     else:
         from sklearn.feature_extraction.text import TfidfVectorizer
 
-        encoder = TfidfVectorizer(analyzer="char_wb", ngram_range=(2, 4), max_features=50_000)
-        embeddings = encoder.fit_transform(source_texts)
+        # One vectorizer across all groups: a scanned row must be projected into
+        # the same vocabulary as the reserved rows it is compared with.
+        source_encoder = TfidfVectorizer(
+            analyzer="char_wb", ngram_range=(2, 4), max_features=50_000
+        )
+        target_encoder = TfidfVectorizer(
+            analyzer="char_wb", ngram_range=(2, 4), max_features=50_000
+        )
+        all_sources = [text for group in groups.values() for text in group.source_texts]
+        all_targets = [text for group in groups.values() for text in group.target_texts]
+        source_encoder.fit(all_sources or [""])
+        target_encoder.fit(all_targets or [""])
+        for group in groups.values():
+            group.source_embeddings = source_encoder.transform(group.source_texts)
+            group.target_embeddings = target_encoder.transform(group.target_texts)
 
+    for group in groups.values():
+        group.source_texts.clear()
+        group.target_texts.clear()
+
+    log.info(
+        "Contamination reference: %s reserved rows in %s comparison group(s), scope=%s",
+        len(selected_ids),
+        len(groups),
+        resolved_scope,
+    )
     return ContaminationReference(
         selected_ids=selected_ids,
-        source_keys=source_keys,
-        document_ids=document_ids,
-        embeddings=embeddings,
-        source_prefilter_shingles=source_prefilter_shingles,
-        target_prefilter_shingles=target_prefilter_shingles,
-        encoder=encoder,
+        comparison_scope=resolved_scope,
+        groups=dict(groups),
+        global_target_keys=global_target_keys,
+        source_encoder=source_encoder,
+        target_encoder=target_encoder,
     )
+
+
+def _similarity_hits(
+    candidates: list[dict[str, Any]],
+    texts: list[str],
+    reference_matrix: Any,
+    threshold: float,
+    config: dict[str, Any],
+    encoder: Any,
+    progress: SelectionProgress | None,
+    stage: str,
+) -> set[int]:
+    """Sample ids whose embedding reaches ``threshold`` against the reference matrix."""
+    import numpy as np
+
+    if not candidates or reference_matrix is None:
+        return set()
+    if config["embeddings"]["enabled"]:
+        vectors = _encode_labse(texts, config, progress, stage=stage)
+        dense = True
+    else:
+        vectors = encoder.transform(texts)
+        dense = False
+    if vectors.shape[0] != len(candidates):
+        log.warning(
+            "%s produced %d vectors for %d texts; trailing candidates skipped",
+            stage,
+            vectors.shape[0],
+            len(candidates),
+        )
+        candidates = candidates[: vectors.shape[0]]
+
+    hits: set[int] = set()
+    for start in range(0, len(candidates), 512):
+        block = vectors[start : start + 512] @ reference_matrix.T
+        maximum = block.max(axis=1) if dense else np.asarray(block.toarray().max(axis=1)).ravel()
+        hits.update(
+            int(record["sample_id"])
+            for record, similarity in zip(candidates[start : start + 512], maximum, strict=True)
+            if similarity >= threshold
+        )
+    return hits
 
 
 def scan_full_corpus_contamination(
@@ -475,33 +734,38 @@ def scan_full_corpus_contamination(
 ) -> ContaminationScanResult:
     """Find train/evaluation leakage in one bounded frame.
 
-    Every source row is checked for selected-document membership and exact
-    source duplication. Rows whose source or target meets the configured shared-
-    shingle minimum against the corresponding side of the reserved pool are then
-    verified by source embedding similarity. Memory stays proportional to one
-    ingestion frame and the selected set.
-    """
-    import numpy as np
+    Three checks, in increasing cost. An exact target duplicate is quarantined
+    across every language pair, because a training row that produces a reserved
+    row's exact output leaks that output whatever its source language. Exact
+    source duplication and selected-document membership are then checked within
+    the row's comparison group. Finally, rows sharing enough token shingles with
+    the group's reserved pool are verified by embedding similarity — on the same
+    side that admitted them, so a target-gated row is decided on its target.
 
-    records = rows.select(
-        "sample_id", "source_text", "target_text", "document_id"
-    ).to_dicts()
+    Memory stays proportional to one ingestion frame plus the selected set.
+    """
+    records = _records(rows)
     separator = str(config.get("input", {}).get("id_separator", ":"))
     contamination = config["contamination"]
+    namespace = _document_namespace(config)
     contaminated: set[int] = set()
-    candidates: list[dict[str, Any]] = []
-    prefilter_size = max(
-        1, int(contamination.get("semantic_prefilter_shingle_size", 3))
+    source_candidates: list[dict[str, Any]] = []
+    target_candidates: list[dict[str, Any]] = []
+    candidate_groups: dict[str, tuple[list[dict[str, Any]], list[dict[str, Any]]]] = defaultdict(
+        lambda: ([], [])
     )
-    prefilter_minimum = max(
-        1, int(contamination.get("semantic_prefilter_min_shared_shingles", 2))
-    )
+    prefilter_size = max(1, int(contamination.get("semantic_prefilter_shingle_size", 3)))
+    prefilter_minimum = max(1, int(contamination.get("semantic_prefilter_min_shared_shingles", 2)))
+    check_exact_target = bool(contamination.get("exact_target_duplication", True))
+    exact_target_rows = 0
     started = time.perf_counter()
     log.info(
-        "Full corpus scan: checking %s rows against %s selected; "
-        "prefilter shingle size %s, minimum shared %s",
+        "Full corpus scan: checking %s rows against %s selected in %s group(s); "
+        "scope=%s, prefilter shingle size %s, minimum shared %s",
         len(records),
         len(reference.selected_ids),
+        len(reference.groups),
+        reference.comparison_scope,
         prefilter_size,
         prefilter_minimum,
     )
@@ -509,107 +773,126 @@ def scan_full_corpus_contamination(
         sample_id = int(record["sample_id"])
         if sample_id in reference.selected_ids:
             continue
-        source_key = " ".join(_tokens(str(record["source_text"])))
+        profile = _profile_for(record)
+        source = str(record["source_text"])
+        target = str(record["target_text"])
+
+        if check_exact_target and profile.target_key(target) in reference.global_target_keys:
+            contaminated.add(sample_id)
+            exact_target_rows += 1
+            continue
+
+        key = _group_key(
+            reference.comparison_scope, record.get("src_lang"), record.get("tgt_lang")
+        )
+        group = reference.groups.get(key)
+        # No reserved rows this row may be compared with: pair isolation, not an
+        # error. The row simply has nothing to leak into.
+        if group is None:
+            continue
+
         if (
-            source_key in reference.source_keys
-            or _document_id(record, separator) in reference.document_ids
+            profile.source_key(source) in group.source_keys
+            or _document_id(record, separator, namespace) in group.document_ids
         ):
             contaminated.add(sample_id)
-        else:
-            source_candidate = len(
-                _shingles(str(record["source_text"]), prefilter_size)
-                & reference.source_prefilter_shingles
-            ) >= prefilter_minimum
-            target_candidate = len(
-                _shingles(str(record["target_text"]), prefilter_size)
-                & reference.target_prefilter_shingles
-            ) >= prefilter_minimum
-            if source_candidate or target_candidate:
-                candidates.append(record)
+            continue
+
+        if (
+            len(_shingles(source, prefilter_size, profile) & group.source_shingles)
+            >= prefilter_minimum
+        ):
+            candidate_groups[key][0].append(record)
+            source_candidates.append(record)
+        elif (
+            len(
+                _shingles(target, prefilter_size, profile, side="target") & group.target_shingles
+            )
+            >= prefilter_minimum
+        ):
+            candidate_groups[key][1].append(record)
+            target_candidates.append(record)
+
         if position % 5_000 == 0 or position == len(records):
             log.info(
                 "Full corpus scan: prefiltered %s/%s rows; "
-                "%s contaminated, %s semantic candidates",
+                "%s contaminated, %s source and %s target semantic candidates",
                 position,
                 len(records),
                 len(contaminated),
-                len(candidates),
+                len(source_candidates),
+                len(target_candidates),
             )
             _emit(
                 progress,
                 "full_corpus_prefilter",
                 (
                     f"Prefiltered {position:,}/{len(records):,} shard rows; "
-                    f"{len(candidates):,} require semantic verification"
+                    f"{len(source_candidates) + len(target_candidates):,} require "
+                    "semantic verification"
                 ),
                 position,
                 len(records),
                 time.perf_counter() - started,
             )
 
-    if not contamination["near_dup_check_enabled"] or not candidates:
+    prefiltered = len(source_candidates) + len(target_candidates)
+    exact_or_document_rows = len(contaminated)
+    if not contamination["near_dup_check_enabled"] or not prefiltered:
         return ContaminationScanResult(
             contaminated,
-            exact_or_document_rows=len(contaminated),
-            semantic_prefilter_rows=len(candidates),
+            exact_or_document_rows=exact_or_document_rows,
+            semantic_prefilter_rows=prefiltered,
             semantic_checked_rows=0,
+            exact_target_rows=exact_target_rows,
         )
 
-    texts = [str(record["source_text"]) for record in candidates]
-    exact_or_document_rows = len(contaminated)
-    if config["embeddings"]["enabled"]:
-        vectors = _encode_labse(
-            texts,
-            config,
-            progress,
-            stage="full_corpus_embeddings",
-        )
-        selected = reference.embeddings
-        if vectors.shape[0] != len(candidates):
-            log.warning(
-                "LaBSE produced %d embeddings for %d texts; trailing candidates skipped",
-                vectors.shape[0],
-                len(candidates),
-            )
-            candidates = candidates[: vectors.shape[0]]
-        for start in range(0, len(candidates), 512):
-            similarities = vectors[start : start + 512] @ selected.T
-            maximum = similarities.max(axis=1)
+    source_threshold, target_threshold = _side_thresholds(
+        reference.comparison_scope, contamination
+    )
+    checked = 0
+    for key, (by_source, by_target) in candidate_groups.items():
+        group = reference.groups[key]
+        if by_source:
             contaminated.update(
-                int(record["sample_id"])
-                for record, similarity in zip(
-                    candidates[start : start + 512], maximum, strict=True
+                _similarity_hits(
+                    by_source,
+                    [str(record["source_text"]) for record in by_source],
+                    group.source_embeddings,
+                    source_threshold,
+                    config,
+                    reference.source_encoder,
+                    progress,
+                    stage=f"full_corpus_source_embeddings[{key}]",
                 )
-                if similarity >= float(contamination["near_dup_cosine_threshold"])
             )
-    else:
-        vectors = reference.encoder.transform(texts)
-        if vectors.shape[0] != len(candidates):
-            log.warning(
-                "TF-IDF produced %d vectors for %d texts; trailing candidates skipped",
-                vectors.shape[0],
-                len(candidates),
-            )
-            candidates = candidates[: vectors.shape[0]]
-        for start in range(0, len(candidates), 512):
-            similarities = (vectors[start : start + 512] @ reference.embeddings.T).toarray()
-            maximum = np.asarray(similarities.max(axis=1)).ravel()
+            checked += len(by_source)
+        if by_target:
             contaminated.update(
-                int(record["sample_id"])
-                for record, similarity in zip(
-                    candidates[start : start + 512], maximum, strict=True
+                _similarity_hits(
+                    by_target,
+                    [str(record["target_text"]) for record in by_target],
+                    group.target_embeddings,
+                    target_threshold,
+                    config,
+                    reference.target_encoder,
+                    progress,
+                    stage=f"full_corpus_target_embeddings[{key}]",
                 )
-                if similarity >= float(contamination["near_dup_cosine_threshold"])
             )
+            checked += len(by_target)
+
     return ContaminationScanResult(
         contaminated,
         exact_or_document_rows=exact_or_document_rows,
-        semantic_prefilter_rows=len(candidates),
-        semantic_checked_rows=len(candidates),
+        semantic_prefilter_rows=prefiltered,
+        semantic_checked_rows=checked,
+        exact_target_rows=exact_target_rows,
     )
 
 
 def _dedup_embeddings(
+    rows: list[_Row],
     indexes: list[int],
     embeddings: np.ndarray,
     threshold: float,
@@ -622,6 +905,10 @@ def _dedup_embeddings(
     complete candidate matrix. At 50,000 rows that is 2.5 billion cosine pairs.
     Random-hyperplane bands retain high recall around the configured 0.95
     threshold while keeping the candidate comparisons bounded.
+
+    Buckets are keyed by ``(pair_key, code)``. LaBSE is cross-lingual, so without
+    the pair in the key a Russian sentence and its English translation can land in
+    the same bucket and clear a threshold meant for same-language duplicates.
     """
     import numpy as np
 
@@ -638,15 +925,18 @@ def _dedup_embeddings(
     )
     signatures = embeddings @ projections >= 0
     powers = (1 << np.arange(bits_per_band, dtype=np.uint16)).reshape(1, -1)
-    buckets: list[dict[int, list[int]]] = [defaultdict(list) for _ in range(band_count)]
+    buckets: list[dict[tuple[str, int], list[int]]] = [
+        defaultdict(list) for _ in range(band_count)
+    ]
     dropped_positions: set[int] = set()
 
     for position in range(len(indexes)):
+        pair = rows[indexes[position]].pair_key
         candidates: set[int] = set()
-        codes: list[int] = []
+        codes: list[tuple[str, int]] = []
         for band in range(band_count):
             start = band * bits_per_band
-            code = int((signatures[position, start : start + bits_per_band] * powers).sum())
+            code = (pair, int((signatures[position, start : start + bits_per_band] * powers).sum()))
             codes.append(code)
             candidates.update(buckets[band].get(code, ()))
 
@@ -692,6 +982,28 @@ def _dedup_embeddings(
 def _candidate_documents(
     rows: list[_Row], indexes: list[int], config: dict[str, Any], rng: random.Random
 ) -> list[int]:
+    """Apply the document cap once per language pair.
+
+    The cap bounds how many documents a benchmark may draw from. Applied across
+    pairs it becomes a race: whichever pair has more documents consumes the
+    allowance and the other is left with none. Each pair gets its own cap, taken
+    from that pair's merged policy.
+    """
+    if not indexes:
+        return indexes
+    keys = {rows[index].pair_key for index in indexes}
+    if len(keys) > 1:
+        by_pair: dict[str, list[int]] = defaultdict(list)
+        for index in indexes:
+            by_pair[rows[index].pair_key].append(index)
+        kept: set[int] = set()
+        for key, pair_indexes in by_pair.items():
+            kept.update(
+                _candidate_documents(rows, pair_indexes, resolve_pair_policy(config, key), rng)
+            )
+        return [index for index in indexes if index in kept]
+
+    config = resolve_pair_policy(config, next(iter(keys)))
     maximum = config["selection"].get("max_test_documents")
     if not maximum:
         return indexes
@@ -739,6 +1051,37 @@ def _candidate_documents(
     return [index for index in indexes if rows[index].document_id in selected_documents]
 
 
+def _proportional_targets(counts: Counter[str], total: int) -> dict[str, int]:
+    """Split ``total`` across keys in proportion to their row counts.
+
+    Used to give every language pair its own slice of the benchmark before
+    domains compete. Without it, a large English batch consumes a combined
+    en-fa + ru-fa reservation simply by outnumbering the Russian rows.
+    """
+    population = sum(counts.values())
+    if not population or total <= 0:
+        return dict.fromkeys(counts, 0)
+    targets = {key: min(count, round(count / population * total)) for key, count in counts.items()}
+    difference = total - sum(targets.values())
+    order = sorted(counts, key=lambda key: (-counts[key], key))
+    while difference and order:
+        progressed = False
+        for key in order:
+            if difference > 0 and targets[key] < counts[key]:
+                targets[key] += 1
+                difference -= 1
+                progressed = True
+            elif difference < 0 and targets[key] > 0:
+                targets[key] -= 1
+                difference += 1
+                progressed = True
+            if difference == 0:
+                break
+        if not progressed:
+            break
+    return targets
+
+
 def _domain_targets(rows: list[_Row], total: int, config: dict[str, Any]) -> dict[str, int]:
     counts = Counter(row.domain for row in rows)
     if not counts:
@@ -752,8 +1095,12 @@ def _domain_targets(rows: list[_Row], total: int, config: dict[str, Any]) -> dic
         }
     else:
         shares = {domain: count / len(rows) for domain, count in counts.items()}
+    # The configured floor is per domain within one pair. Applied literally to a
+    # small pair it would demand more rows than the pair's whole target, so it is
+    # clamped to an even split of what this pair actually has to give.
+    floor = min(int(selection["min_per_domain"]), max(1, total // len(counts)))
     targets = {
-        domain: min(count, max(int(selection["min_per_domain"]), round(shares[domain] * total)))
+        domain: min(count, max(floor, round(shares[domain] * total)))
         for domain, count in counts.items()
     }
     difference = total - sum(targets.values())
@@ -776,31 +1123,56 @@ def _domain_targets(rows: list[_Row], total: int, config: dict[str, Any]) -> dic
     return targets
 
 
-def _quotas(rows: list[_Row], total: int, config: dict[str, Any]) -> dict[tuple[str, str], int]:
-    targets = _domain_targets(rows, total, config)
-    shares = [float(value) for value in config["selection"]["length_bucket_shares"]]
-    edges = config["selection"]["length_buckets"]
-    labels = [f"len_{low}_{high}" for low, high in zip(edges[:-1], edges[1:], strict=True)]
-    quota: dict[tuple[str, str], int] = {}
-    for domain, target in targets.items():
-        available = Counter(row.length_bucket for row in rows if row.domain == domain)
-        wanted = {
-            label: min(available[label], round(target * share))
-            for label, share in zip(labels, shares, strict=True)
-        }
-        remaining = target - sum(wanted.values())
-        while remaining:
-            progressed = False
-            for label in labels:
-                if wanted[label] < available[label]:
-                    wanted[label] += 1
-                    remaining -= 1
-                    progressed = True
-                if remaining == 0:
+def pair_targets(rows: list[_Row], total: int) -> dict[str, int]:
+    """How much of the benchmark each language pair receives."""
+    return _proportional_targets(Counter(row.pair_key for row in rows), total)
+
+
+def _quotas(
+    rows: list[_Row], total: int, config: dict[str, Any]
+) -> dict[tuple[str, str, str], int]:
+    """Allocate the benchmark hierarchically: language pair, then domain, then length.
+
+    Each pair's slice is computed first and everything below it is resolved inside
+    that slice, using that pair's own merged policy. A pair therefore cannot lose
+    its representation to another pair's domain distribution or token density.
+    """
+    by_pair: dict[str, list[_Row]] = defaultdict(list)
+    for row in rows:
+        by_pair[row.pair_key].append(row)
+    targets_by_pair = pair_targets(rows, total)
+
+    quota: dict[tuple[str, str, str], int] = {}
+    for key, pair_rows in by_pair.items():
+        pair_total = targets_by_pair.get(key, 0)
+        if pair_total <= 0:
+            continue
+        policy = resolve_pair_policy(config, key)
+        selection = policy["selection"]
+        shares = [float(value) for value in selection["length_bucket_shares"]]
+        edges = selection["length_buckets"]
+        labels = [f"len_{low}_{high}" for low, high in zip(edges[:-1], edges[1:], strict=True)]
+        for domain, target in _domain_targets(pair_rows, pair_total, policy).items():
+            available = Counter(row.length_bucket for row in pair_rows if row.domain == domain)
+            wanted = {
+                label: min(available[label], round(target * share))
+                for label, share in zip(labels, shares, strict=True)
+            }
+            remaining = target - sum(wanted.values())
+            while remaining:
+                progressed = False
+                for label in labels:
+                    if wanted[label] < available[label]:
+                        wanted[label] += 1
+                        remaining -= 1
+                        progressed = True
+                    if remaining == 0:
+                        break
+                if not progressed:
                     break
-            if not progressed:
-                break
-        quota.update({(domain, label): count for label, count in wanted.items() if count})
+            quota.update(
+                {(key, domain, label): count for label, count in wanted.items() if count}
+            )
     return quota
 
 
@@ -856,15 +1228,19 @@ def _select(
     config: dict[str, Any],
     rng: random.Random,
     progress: SelectionProgress | None = None,
-) -> tuple[list[int], dict[tuple[str, str], int]]:
+) -> tuple[list[int], dict[tuple[str, str, str], int]]:
     quotas = _quotas([rows[index] for index in candidates], total, config)
-    log.info("Selection: computed %s domain/bucket quotas for total %s", len(quotas), total)
+    log.info(
+        "Selection: computed %s pair/domain/bucket quotas for total %s", len(quotas), total
+    )
     selected: list[int] = []
-    for (domain, bucket), quota in quotas.items():
+    for (key, domain, bucket), quota in quotas.items():
         cell = [
             index
             for index in candidates
-            if rows[index].domain == domain and rows[index].length_bucket == bucket
+            if rows[index].pair_key == key
+            and rows[index].domain == domain
+            and rows[index].length_bucket == bucket
         ]
         if config["diversity"]["strategy"] == "random":
             selected.extend(rng.sample(cell, min(quota, len(cell))))
@@ -877,10 +1253,34 @@ def _select(
                     rng,
                     int(config["diversity"].get("projection_dimensions", 128)),
                     progress,
-                    label=f"{domain}/{bucket}",
+                    label=f"{key}/{domain}/{bucket}",
                 )
             )
     return selected, quotas
+
+
+def _feature_shares(config: dict[str, Any]) -> dict[str, float]:
+    selection = config["selection"]
+    shares = dict(selection["hard_phenomena_min_share"])
+    shares[FEATURE_RARE_TERM] = selection["rare_term_min_share"]
+    return shares
+
+
+def unsupported_features(rows: list[_Row], config: dict[str, Any]) -> dict[str, list[str]]:
+    """Quota features each pair present in ``rows`` cannot honestly measure."""
+    shares = _feature_shares(config)
+    report: dict[str, list[str]] = {}
+    for row in rows:
+        if row.pair_key in report:
+            continue
+        missing = sorted(
+            flag
+            for flag in shares
+            if flag in ALL_FEATURES and not row.profile.supports(flag)
+        )
+        if missing:
+            report[row.pair_key] = missing
+    return report
 
 
 def _top_up_hard_phenomena(
@@ -892,33 +1292,54 @@ def _top_up_hard_phenomena(
     config: dict[str, Any],
     progress: SelectionProgress | None = None,
 ) -> list[int]:
+    """Raise hard-phenomena coverage, once per feature, within the pairs that have it.
+
+    Two constraints beyond the original stage. A feature is only pursued inside
+    language pairs whose profile can measure it: an acronym quota applied to a
+    caseless source language would evict good rows to chase a count that the
+    detector can never reach. And both the incoming and the evicted rows come from
+    the same restricted set, so topping up one pair cannot spend another pair's
+    allocation.
+    """
     import numpy as np
 
-    shares = dict(config["selection"]["hard_phenomena_min_share"])
-    shares["is_rare_term"] = config["selection"]["rare_term_min_share"]
+    shares = _feature_shares(config)
     chosen = set(selected)
     started = time.perf_counter()
-    log.info(
-        "Hard-phenomena top-up: selected=%s, flags=%s", len(chosen), ", ".join(shares)
-    )
+    log.info("Hard-phenomena top-up: selected=%s, flags=%s", len(chosen), ", ".join(shares))
     for flag, share in shares.items():
-        required = math.ceil(float(share) * total)
-        current = sum(rows[index].flags[flag] for index in chosen)
+        supporting = {
+            rows[index].pair_key for index in chosen if rows[index].profile.supports(flag)
+        }
+        if not supporting:
+            log.info("Top-up %s: unsupported by every selected language pair; skipped", flag)
+            _emit(
+                progress,
+                "hard_phenomena_topup",
+                f"Top-up {flag}: not measurable for any selected language pair; skipped",
+            )
+            continue
+
+        scope = [index for index in chosen if rows[index].pair_key in supporting]
+        required = math.ceil(float(share) * len(scope))
+        current = sum(rows[index].flags[flag] for index in scope)
         deficit = max(0, required - current)
         options = [
             index
             for index in candidates
-            if index not in chosen and rows[index].flags[flag]
+            if index not in chosen
+            and rows[index].flags[flag]
+            and rows[index].pair_key in supporting
         ]
-        replacement_count = min(deficit, len(options), len(chosen))
+        replacement_count = min(deficit, len(options), len(scope))
         if replacement_count:
-            chosen_list = sorted(chosen)
-            chosen_vectors = np.vstack([vectors[index] for index in chosen_list])
+            scope_list = sorted(scope)
+            scope_vectors = np.vstack([vectors[index] for index in scope_list])
             option_scores: list[float] = []
             for start in range(0, len(options), 1_024):
                 block = options[start : start + 1_024]
                 block_vectors = np.vstack([vectors[index] for index in block])
-                option_scores.extend((block_vectors @ chosen_vectors.T).max(axis=1).tolist())
+                option_scores.extend((block_vectors @ scope_vectors.T).max(axis=1).tolist())
             incoming = [
                 index
                 for _, index in sorted(zip(option_scores, options, strict=True))[
@@ -926,7 +1347,7 @@ def _top_up_hard_phenomena(
                 ]
             ]
 
-            similarities = chosen_vectors @ chosen_vectors.T
+            similarities = scope_vectors @ scope_vectors.T
             np.fill_diagonal(similarities, -np.inf)
             redundancy = similarities.max(axis=1)
             removable = [
@@ -937,13 +1358,18 @@ def _top_up_hard_phenomena(
                         -float(redundancy[position]),
                         index,
                     )
-                    for position, index in enumerate(chosen_list)
+                    for position, index in enumerate(scope_list)
                 )[:replacement_count]
             ]
             chosen.difference_update(removable)
             chosen.update(incoming)
         log.info(
-            "Top-up %s: required=%s had=%s replaced=%s", flag, required, current, replacement_count
+            "Top-up %s: pairs=%s required=%s had=%s replaced=%s",
+            flag,
+            ",".join(sorted(supporting)),
+            required,
+            current,
+            replacement_count,
         )
         _emit(
             progress,
@@ -959,14 +1385,18 @@ def _top_up_hard_phenomena(
     return sorted(chosen)
 
 
+
 def _split_dev_test(
     rows: list[_Row], selected: list[int], config: dict[str, Any], rng: random.Random
 ) -> set[int]:
     if not config["splits"]["dev_test_split"]:
         return set()
-    by_cell: dict[tuple[str, str], list[int]] = defaultdict(list)
+    # Stratified by pair as well as domain and length, so a small pair does not
+    # land entirely in dev or entirely in test.
+    by_cell: dict[tuple[str, str, str], list[int]] = defaultdict(list)
     for index in selected:
-        by_cell[(rows[index].domain, rows[index].length_bucket)].append(index)
+        row = rows[index]
+        by_cell[(row.pair_key, row.domain, row.length_bucket)].append(index)
     dev: set[int] = set()
     for indexes in by_cell.values():
         count = round(len(indexes) * float(config["splits"]["dev_fraction"]))
@@ -983,13 +1413,15 @@ def _gold_subset(
 ) -> set[int]:
     if not config["gold_subset"]["enabled"] or not selected:
         return set()
-    by_domain: dict[str, list[int]] = defaultdict(list)
+    # Human verification budget is split across (pair, domain) cells so every
+    # represented pair receives some manually verified rows.
+    by_cell: dict[tuple[str, str], list[int]] = defaultdict(list)
     for index in selected:
-        by_domain[rows[index].domain].append(index)
-    per_domain = max(1, int(config["gold_subset"]["size"]) // len(by_domain))
+        by_cell[(rows[index].pair_key, rows[index].domain)].append(index)
+    per_cell = max(1, int(config["gold_subset"]["size"]) // len(by_cell))
     gold: list[int] = []
-    for indexes in by_domain.values():
-        gold.extend(rng.sample(indexes, min(per_domain, len(indexes))))
+    for indexes in by_cell.values():
+        gold.extend(rng.sample(indexes, min(per_cell, len(indexes))))
     return set(gold[: int(config["gold_subset"]["size"])])
 
 
@@ -1008,9 +1440,7 @@ def select(
     """Run every source-pipeline stage and translate its outputs to registry state."""
     log.info("Starting Contamination Safe 'select' process...")
     selection_started = time.perf_counter()
-    records = rows.select(
-        "sample_id", "source_text", "target_text", "domain", "document_id"
-    ).to_dicts()
+    records = _records(rows)
     if target <= 0 or not records:
         return SelectionResult(
             [], [], [], [], {}, {"strategy": "contamination_safe", "selected": 0}
@@ -1076,6 +1506,7 @@ def select(
         active = active[: embeddings.shape[0]]
     if dedup["enabled"] and dedup["embedding_dedup_enabled"]:
         active, embeddings, removed = _dedup_embeddings(
+            annotated,
             active,
             embeddings,
             float(dedup["embedding_cosine_threshold"]),
@@ -1147,28 +1578,56 @@ def select(
     if contamination["near_dup_check_enabled"] and selected_set:
         stage_started = time.perf_counter()
         threshold = float(contamination["near_dup_cosine_threshold"])
-        pool = [index for index in active if index not in selected_set and index not in quarantined]
-        selected_embeddings = np.vstack([vectors[index] for index in selected_set])
-        log.info("Candidate scan: %s pool rows vs %s selected (threshold=%s)", len(pool), len(selected_set), threshold)
-        for start in range(0, len(pool), 2048):
-            block = pool[start : start + 2048]
-            similarities = np.vstack([vectors[index] for index in block]) @ selected_embeddings.T
-            quarantined.update(
-                index
-                for index, similarity in zip(
-                    block, similarities.max(axis=1), strict=True
-                )
-                if similarity >= threshold
-            )
-            completed = min(start + 2048, len(pool))
-            _emit(
-                progress,
-                "candidate_contamination_scan",
-                f"Checked {completed:,}/{len(pool):,} candidates against the selected set",
-                completed,
+        # Both sides of this comparison are source embeddings, so it stays within
+        # one pair: the threshold is calibrated for same-language near-duplicates,
+        # and LaBSE would otherwise score a Russian candidate against its English
+        # translation high enough to quarantine a perfectly good training row.
+        selected_by_pair: dict[str, list[int]] = defaultdict(list)
+        for index in selected_set:
+            selected_by_pair[annotated[index].pair_key].append(index)
+        pool_by_pair: dict[str, list[int]] = defaultdict(list)
+        for index in active:
+            if index not in selected_set and index not in quarantined:
+                pool_by_pair[annotated[index].pair_key].append(index)
+
+        checked = 0
+        pool_total = sum(len(pool) for pool in pool_by_pair.values())
+        for key, pool in pool_by_pair.items():
+            reserved = selected_by_pair.get(key)
+            if not reserved:
+                continue
+            selected_embeddings = np.vstack([vectors[index] for index in reserved])
+            log.info(
+                "Candidate scan [%s]: %s pool rows vs %s selected (threshold=%s)",
+                key,
                 len(pool),
-                time.perf_counter() - stage_started,
+                len(reserved),
+                threshold,
             )
+            for start in range(0, len(pool), 2048):
+                block = pool[start : start + 2048]
+                similarities = (
+                    np.vstack([vectors[index] for index in block]) @ selected_embeddings.T
+                )
+                quarantined.update(
+                    index
+                    for index, similarity in zip(
+                        block, similarities.max(axis=1), strict=True
+                    )
+                    if similarity >= threshold
+                )
+                checked += len(block)
+                _emit(
+                    progress,
+                    "candidate_contamination_scan",
+                    (
+                        f"Checked {checked:,}/{pool_total:,} candidates against "
+                        "their own pair's selected set"
+                    ),
+                    checked,
+                    pool_total,
+                    time.perf_counter() - stage_started,
+                )
 
     dev = _split_dev_test(annotated, selected, config, rng)
     gold = _gold_subset(annotated, selected, config, rng)
@@ -1179,16 +1638,10 @@ def select(
         len(dev),
         len(gold),
     )
-    flags = {
-        flag: sum(annotated[index].flags[flag] for index in selected_set)
-        for flag in (
-            "has_math",
-            "has_numbers_units",
-            "has_acronyms",
-            "has_mixed_script",
-            "is_rare_term",
-        )
-    }
+    flags = {flag: sum(annotated[index].flags[flag] for index in selected_set) for flag in ALL_FEATURES}
+    selected_rows = [annotated[index] for index in selected_set]
+    candidate_rows = [annotated[index] for index in candidates]
+    unsupported = unsupported_features(selected_rows, config)
     report = {
         "strategy": "contamination_safe",
         "config": config,
@@ -1206,9 +1659,17 @@ def select(
             "model": config["embeddings"]["model"] if config["embeddings"]["enabled"] else None,
         },
         "features": flags,
-        "quotas": {f"{domain}:{bucket}": count for (domain, bucket), count in quotas.items()},
-        "domains": dict(Counter(annotated[index].domain for index in selected_set)),
-        "length_buckets": dict(Counter(annotated[index].length_bucket for index in selected_set)),
+        # Features a pair's language profile cannot measure are omitted from its
+        # quotas rather than reported as a satisfied zero.
+        "unsupported_features": unsupported,
+        "quotas": {
+            f"{key}|{domain}:{bucket}": count for (key, domain, bucket), count in quotas.items()
+        },
+        "language_pairs": dict(Counter(row.pair_key for row in selected_rows)),
+        "pair_targets": pair_targets(candidate_rows, selection_target),
+        "document_namespace": _document_namespace(config),
+        "domains": dict(Counter(row.domain for row in selected_rows)),
+        "length_buckets": dict(Counter(row.length_bucket for row in selected_rows)),
         "splits": {"dev": len(dev), "test": len(selected_set - dev)},
         "human_verify": len(gold),
         "manifest": {"selected_ids_sha256": _selection_hash(annotated, selected_set)},
