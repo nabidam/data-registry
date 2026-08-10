@@ -162,6 +162,10 @@ class DatasetReservation(Base, TimestampMixin):
     comparison_scope: Mapped[str] = mapped_column(
         String(32), default="pair", server_default="pair", nullable=False
     )
+    # The single instant stamped onto every row this run protected. Because a
+    # reservation only promotes rows that were TRAINABLE, this identifies exactly
+    # the rows it changed, and is what makes the run reversible.
+    applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     report: Mapped[dict | None] = mapped_column(JSONB)
     error: Mapped[str | None] = mapped_column(Text)
 

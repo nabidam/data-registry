@@ -6,13 +6,24 @@ from core.errors import BadRequest, NotFound
 from core.locks import lock_allocation_boundary
 from db.session import get_session
 from models import Batch, DatasetDefinition, DatasetReservation, Snapshot
-from schemas import DatasetIn, DatasetOut, DatasetReservationIn, DatasetReservationOut
+from schemas import (
+    DatasetIn,
+    DatasetOut,
+    DatasetReservationIn,
+    DatasetReservationOut,
+    DatasetReservationRevertIn,
+    ReservationRevertImpact,
+)
 from services.dataset_builder.builder import (
     allocation_counts,
     context_for_definition,
     count_rows,
     preview,
     statistics,
+)
+from services.evaluation.reservation_revert import (
+    inspect_reservation_revert,
+    revert_dataset_reservation,
 )
 from services.evaluation.reservation_config import (
     load_contamination_safe_config,
@@ -205,6 +216,54 @@ async def create_dataset_reservation(
     await session.commit()
     await session.refresh(reservation)
     return reservation
+
+
+async def _get_reservation(
+    session: AsyncSession, dataset_id: int, reservation_id: int
+) -> DatasetReservation:
+    reservation = await session.get(DatasetReservation, reservation_id)
+    if reservation is None or reservation.dataset_id != dataset_id:
+        raise NotFound("dataset reservation", reservation_id)
+    return reservation
+
+
+@router.get(
+    "/{dataset_id}/reservations/{reservation_id}/revert-impact",
+    response_model=ReservationRevertImpact,
+)
+async def reservation_revert_impact(
+    dataset_id: int,
+    reservation_id: int,
+    session: AsyncSession = Depends(get_session),
+):
+    """Dry-run a revert and report every dependency that blocks it."""
+    reservation = await _get_reservation(session, dataset_id, reservation_id)
+    return await inspect_reservation_revert(session, reservation)
+
+
+@router.post(
+    "/{dataset_id}/reservations/{reservation_id}/revert",
+    response_model=ReservationRevertImpact,
+)
+async def revert_reservation(
+    dataset_id: int,
+    reservation_id: int,
+    payload: DatasetReservationRevertIn,
+    session: AsyncSession = Depends(get_session),
+):
+    """Return this reservation's samples to TRAINABLE.
+
+    The recovery path for a reservation that was itself wrong. Reservation and
+    quarantine are otherwise permanent, so this is deliberately restricted to the
+    most recent completed run and refuses once an evaluation set depends on it.
+    """
+    reservation = await _get_reservation(session, dataset_id, reservation_id)
+    await lock_allocation_boundary(session)
+    try:
+        return await revert_dataset_reservation(session, reservation)
+    except ValueError as exc:
+        await session.rollback()
+        raise BadRequest(str(exc)) from exc
 
 
 @router.get("/{dataset_id}/statistics")

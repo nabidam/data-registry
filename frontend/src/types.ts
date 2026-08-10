@@ -148,7 +148,7 @@ export type BatchRule = {
 export type DatasetReservation = {
   id: number
   dataset_id: number
-  status: 'queued' | 'running' | 'ready' | 'failed'
+  status: 'queued' | 'running' | 'ready' | 'failed' | 'reverted'
   selector: 'contamination_safe' | 'heuristic' | 'random'
   percent: number
   max_samples: number
@@ -156,9 +156,22 @@ export type DatasetReservation = {
   seed: number
   contamination_scope: 'registry' | 'composition'
   comparison_scope: 'pair' | 'source_language' | 'target_language' | 'any'
+  applied_at: string | null
   report: Record<string, unknown> | null
   error: string | null
   created_at: string
+}
+
+export type ReservationRevertImpact = {
+  reservation_id: number
+  dataset_id: number
+  status: string
+  applied_at: string | null
+  reserved_samples: number
+  quarantined_samples: number
+  can_revert: boolean
+  blockers: string[]
+  warnings: string[]
 }
 
 export type Split = {

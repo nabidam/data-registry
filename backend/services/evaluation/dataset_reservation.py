@@ -44,7 +44,13 @@ async def _set_allocations(
     session: AsyncSession,
     reserved_ids: list[int],
     quarantined_ids: set[int],
-) -> None:
+) -> datetime:
+    """Protect the selected rows, returning the instant stamped onto all of them.
+
+    Only rows that are still ``TRAINABLE`` are promoted, so this timestamp marks
+    exactly the rows this run changed and nothing a previous run had already
+    claimed. ``reservation_revert`` uses it to undo the run.
+    """
     now = datetime.now(UTC)
     for start in range(0, len(reserved_ids), _UPDATE_ROWS):
         chunk = reserved_ids[start : start + _UPDATE_ROWS]
@@ -61,6 +67,7 @@ async def _set_allocations(
             .where(Sample.id.in_(chunk), Sample.allocation == Allocation.TRAINABLE)
             .values(allocation=Allocation.QUARANTINED, quarantined_at=now)
         )
+    return now
 
 
 async def _record_selected_rows(
@@ -184,7 +191,9 @@ async def run_dataset_reservation(
                 semantic_checked += result.semantic_checked_rows
                 quarantined_ids.update(result.quarantined_ids)
 
-        await _set_allocations(session, reserved_ids, quarantined_ids)
+        reservation.applied_at = await _set_allocations(
+            session, reserved_ids, quarantined_ids
+        )
         await _record_selected_rows(session, reservation, selection)
         selector_report = selection.report if isinstance(selection, SelectionResult) else {}
         reservation.report = {

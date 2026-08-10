@@ -207,9 +207,26 @@ class DatasetReservationOut(ORMModel):
     seed: int
     contamination_scope: str
     comparison_scope: str
+    applied_at: datetime | None
     report: dict | None
     error: str | None
     created_at: datetime
+
+
+class DatasetReservationRevertIn(BaseModel):
+    confirm_revert: Literal[True]
+
+
+class ReservationRevertImpact(BaseModel):
+    reservation_id: int
+    dataset_id: int
+    status: str
+    applied_at: datetime | None
+    reserved_samples: int
+    quarantined_samples: int
+    can_revert: bool
+    blockers: list[str]
+    warnings: list[str]
 
 
 # --- splits ----------------------------------------------------------------

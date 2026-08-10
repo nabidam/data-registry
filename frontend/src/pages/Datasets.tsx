@@ -10,7 +10,15 @@ import { EditEntity } from '@/components/EditEntity'
 import { Badge, Button, Card, Checkbox, ErrorBox, Field, Input, PageHeader, Select } from '@/components/ui'
 import { useCreate, useList, usePatch, useRemove } from '@/hooks/useResource'
 import { api } from '@/lib/api'
-import type { Batch, BatchRule, Dataset, DatasetReservation, Filters, Row } from '@/types'
+import type {
+  Batch,
+  BatchRule,
+  Dataset,
+  DatasetReservation,
+  Filters,
+  ReservationRevertImpact,
+  Row,
+} from '@/types'
 
 const parseIds = (value: string): number[] =>
   value
@@ -94,6 +102,30 @@ export default function Datasets() {
       queryClient.invalidateQueries({ queryKey: ['dataset-reservations', inspect] })
       queryClient.invalidateQueries({ queryKey: ['dataset-allocations', inspect] })
       setReservation((current) => ({ ...current, confirmed: false }))
+    },
+  })
+
+  // Reservation and quarantine are otherwise permanent, so the revert path always
+  // shows its impact first and refuses once anything depends on the run.
+  const [revertTarget, setRevertTarget] = useState<number | null>(null)
+  const revertImpact = useQuery({
+    queryKey: ['reservation-revert-impact', inspect, revertTarget],
+    enabled: inspect !== null && revertTarget !== null,
+    queryFn: () =>
+      api.get<ReservationRevertImpact>(
+        `/datasets/${inspect}/reservations/${revertTarget}/revert-impact`,
+      ),
+  })
+  const revert = useMutation({
+    mutationFn: (reservationId: number) =>
+      api.post<ReservationRevertImpact>(
+        `/datasets/${inspect}/reservations/${reservationId}/revert`,
+        { confirm_revert: true },
+      ),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['dataset-reservations', inspect] })
+      queryClient.invalidateQueries({ queryKey: ['dataset-allocations', inspect] })
+      setRevertTarget(null)
     },
   })
 
@@ -813,12 +845,66 @@ export default function Datasets() {
                                   <Text type="body" weight="medium">Reservation #{item.id}</Text>
                                   <Badge>{item.selector}</Badge>
                                 </HStack>
-                                <Badge>{item.status}</Badge>
+                                <HStack gap={2} vAlign="center">
+                                  <Badge>{item.status}</Badge>
+                                  {(item.status === 'ready' || item.status === 'failed') && (
+                                    <Button
+                                      onClick={() =>
+                                        setRevertTarget(revertTarget === item.id ? null : item.id)
+                                      }
+                                    >
+                                      {revertTarget === item.id ? 'Cancel' : 'Revert…'}
+                                    </Button>
+                                  )}
+                                </HStack>
                               </HStack>
                               {item.error && (
                                 <Text type="body" style={{ color: '#ef4444' }}>
                                   {item.error}
                                 </Text>
+                              )}
+                              {revertTarget === item.id && (
+                                <Card>
+                                  <VStack gap={2}>
+                                    <Text type="body" weight="medium">
+                                      Return this reservation&apos;s samples to trainable
+                                    </Text>
+                                    {revertImpact.isLoading ? (
+                                      <Text type="body">Checking impact…</Text>
+                                    ) : revertImpact.data ? (
+                                      <VStack gap={2}>
+                                        <Text type="supporting" color="secondary">
+                                          {revertImpact.data.reserved_samples.toLocaleString()}{' '}
+                                          reserved and{' '}
+                                          {revertImpact.data.quarantined_samples.toLocaleString()}{' '}
+                                          quarantined samples still carry this run&apos;s
+                                          protection.
+                                        </Text>
+                                        {revertImpact.data.warnings.map((warning) => (
+                                          <Text key={warning} type="supporting" color="secondary">
+                                            ⚠ {warning}
+                                          </Text>
+                                        ))}
+                                        {revertImpact.data.blockers.map((blocker) => (
+                                          <Text key={blocker} type="body" style={{ color: '#ef4444' }}>
+                                            ✕ {blocker}
+                                          </Text>
+                                        ))}
+                                        <HStack>
+                                          <Button
+                                            disabled={
+                                              !revertImpact.data.can_revert || revert.isPending
+                                            }
+                                            onClick={() => revert.mutate(item.id)}
+                                          >
+                                            {revert.isPending ? 'Reverting…' : 'Revert Reservation'}
+                                          </Button>
+                                        </HStack>
+                                      </VStack>
+                                    ) : null}
+                                    {revert.isError && <ErrorBox error={revert.error} />}
+                                  </VStack>
+                                </Card>
                               )}
                               {item.report && (
                                 <Grid columns={4} gap={2}>
