@@ -155,6 +155,7 @@ export type DatasetReservation = {
   target_count: number | null
   seed: number
   contamination_scope: 'registry' | 'composition'
+  comparison_scope: 'pair' | 'source_language' | 'target_language' | 'any'
   report: Record<string, unknown> | null
   error: string | null
   created_at: string

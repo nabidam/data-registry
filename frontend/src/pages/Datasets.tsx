@@ -60,6 +60,7 @@ export default function Datasets() {
     target_count: '',
     seed: '42',
     contamination_scope: 'registry',
+    comparison_scope: 'pair',
     confirmed: false,
   })
 
@@ -695,6 +696,7 @@ export default function Datasets() {
                             : null,
                           seed: Number(reservation.seed),
                           contamination_scope: reservation.contamination_scope,
+                          comparison_scope: reservation.comparison_scope,
                           confirm_irreversible: true,
                         })
                       }}
@@ -763,6 +765,21 @@ export default function Datasets() {
                           >
                             <option value="registry">All ready batches in registry</option>
                             <option value="composition">This dataset composition only</option>
+                          </Select>
+                        </Field>
+                        <Field label="Contamination Comparison Scope">
+                          <Select
+                            value={reservation.comparison_scope}
+                            onChange={(event) =>
+                              setReservation({ ...reservation, comparison_scope: event.target.value })
+                            }
+                          >
+                            <option value="pair">Same language pair only (recommended)</option>
+                            <option value="source_language">Shares the source language</option>
+                            <option value="target_language">
+                              Shares the target language (may quarantine other pairs)
+                            </option>
+                            <option value="any">Every language pair (advanced)</option>
                           </Select>
                         </Field>
                         <Checkbox
