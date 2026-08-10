@@ -37,3 +37,38 @@ def _read_config(path: Path) -> dict[str, Any]:
 def load_contamination_safe_config() -> dict[str, Any]:
     """Load an isolated contamination-safe policy mapping for callers."""
     return deepcopy(_read_config(_config_path()))
+
+
+def _merge(base: Any, override: Any) -> Any:
+    """Deep-merge mappings; any other value is replaced outright.
+
+    Lists are replaced rather than concatenated because every list in this policy
+    is an ordered definition (bucket edges, bucket shares) where appending would
+    produce a silently invalid policy instead of an override.
+    """
+    if isinstance(base, Mapping) and isinstance(override, Mapping):
+        merged = dict(base)
+        for key, value in override.items():
+            merged[key] = _merge(merged.get(key), value) if key in merged else deepcopy(value)
+        return merged
+    return deepcopy(override)
+
+
+def resolve_pair_policy(config: Mapping[str, Any], pair_key: str) -> dict[str, Any]:
+    """Merge ``config['pairs'][pair_key]`` over the base policy.
+
+    Length buckets and hard-phenomena shares are calibrated against a specific
+    language's token density, so a deployment holding several pairs needs a way
+    to say "ru-fa measures length differently" without forking the whole policy.
+    A config with no ``pairs`` section resolves to the base policy unchanged,
+    which is what keeps older config files working.
+    """
+    overrides = config.get("pairs") or {}
+    if not isinstance(overrides, Mapping):
+        raise ValueError("evaluation reservation config 'pairs' must be a mapping")
+    override = overrides.get(pair_key)
+    if not override:
+        return deepcopy(dict(config))
+    if not isinstance(override, Mapping):
+        raise ValueError(f"evaluation reservation config pairs.{pair_key} must be a mapping")
+    return _merge(dict(config), override)

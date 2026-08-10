@@ -57,6 +57,33 @@ contamination:
   document_level_holdout: true
   near_dup_check_enabled: true
   near_dup_cosine_threshold: 0.92
+  # Which rows may be compared with each other. Selection and quotas are always
+  # per language pair; this controls the contamination scan only.
+  #   pair             identical src_lang + tgt_lang. Default; each pair protects itself.
+  #   source_language  shares the source language, e.g. ru-fa against ru-en.
+  #   target_language  shares the target language, e.g. ru-fa against en-fa.
+  #                    Detects the same Persian material arriving via several source
+  #                    languages, but that redefines contamination and removes rows
+  #                    other pairs consider valid.
+  #   any              every pair compared with every other. Advanced, opt-in.
+  comparison_scope: pair
+  # Applied when a comparison crosses languages on that side. LaBSE places a
+  # translation and its source around 0.85-0.95, so the monolingual 0.92 would
+  # quarantine ordinary translations. A cross-lingual match must be much closer
+  # before it counts as duplication rather than equivalence.
+  cross_lingual_cosine_threshold: 0.97
+  # Exact target duplication is checked across every pair regardless of
+  # comparison_scope: an identical target string in the training pool is output
+  # the model memorizes, whatever language its source was written in. This is a
+  # hash-set lookup, so widening it costs nothing.
+  exact_target_duplication: true
+  # Document IDs arrive from importers and are rarely globally unique; "doc:1"
+  # collides between unrelated corpora during a registry-wide scan.
+  #   source  namespace by source_id, so re-importing one corpus still shares
+  #           documents but unrelated corpora do not. Default.
+  #   batch   namespace by batch_id; disables cross-batch document holdout.
+  #   none    trust the imported IDs as globally meaningful.
+  document_namespace: source
   # Full-corpus LaBSE inference is limited to rows whose source or target shares
   # enough token shingles with the corresponding side of the reserved evaluation
   # pool. Two shared three-token shingles catch four-token passages and separated
@@ -71,3 +98,15 @@ splits:
 gold_subset:
   enabled: true
   size: 120
+
+# Per-language-pair overrides, deep-merged over everything above. The key is
+# "<src>-<tgt>" using primary subtags, e.g. "ru-fa". Length buckets count source
+# tokens, so a morphologically denser source language reaches the same meaning in
+# fewer tokens and may want its own edges. Features the pair cannot measure are
+# dropped automatically by its language profile; they do not need an override.
+#
+# pairs:
+#   ru-fa:
+#     selection:
+#       length_buckets: [0, 12, 32, 70, 999999]
+pairs: {}
