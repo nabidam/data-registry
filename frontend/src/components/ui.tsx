@@ -110,6 +110,19 @@ export function Stat({
   )
 }
 
+/**
+ * Flattens renderable children to plain text. Astryx components take a `label`
+ * string for accessibility, while call sites write JSX children — including
+ * interpolated fragments like `Attempt {n}`, which `String()` would mangle.
+ */
+function toText(node: ReactNode): string {
+  if (node === null || node === undefined || typeof node === 'boolean') return ''
+  if (typeof node === 'string' || typeof node === 'number') return String(node)
+  if (Array.isArray(node)) return node.map(toText).join('')
+  if (React.isValidElement(node)) return toText((node.props as { children?: ReactNode }).children)
+  return ''
+}
+
 type ButtonProps = React.ButtonHTMLAttributes<HTMLButtonElement> & {
   variant?: 'primary' | 'ghost' | 'danger'
   label?: string
@@ -117,23 +130,52 @@ type ButtonProps = React.ButtonHTMLAttributes<HTMLButtonElement> & {
 
 export function Button({ variant = 'primary', className = '', label, children, ...props }: ButtonProps) {
   const astryxVariant = variant === 'danger' ? 'destructive' : variant === 'ghost' ? 'ghost' : 'primary'
-  const buttonLabel = label || (typeof children === 'string' ? children : '')
-  
+  const buttonLabel = label || (typeof children === 'string' ? children : toText(children))
+
+  // AstryxButton defaults `type` to "button"; native <button> defaults to "submit".
+  // Call sites rely on the native default (they mark non-submitting buttons with
+  // type="button" explicitly), so restore it or in-form buttons never submit.
+  const buttonType = props.type ?? 'submit'
+
   return (
     <AstryxButton
       label={buttonLabel || 'Action'}
       variant={astryxVariant}
       isDisabled={props.disabled}
-      type={props.type as any}
+      type={buttonType as any}
       onClick={props.onClick as any}
       className={className}
     >
-      {buttonLabel ? null : children}
+      {/* Plain-text children are covered by `label`; richer children (icons,
+          fragments) must still render, with `label` serving accessibility. */}
+      {typeof children === 'string' || children == null ? null : children}
     </AstryxButton>
   )
 }
 
+/**
+ * Controls that render their own Astryx `Field` (label + control, wired via an
+ * internally generated id). `Field` below hands its label to them instead of
+ * wrapping them, because the wrapper's `htmlFor` can never reach the control:
+ * Astryx inputs override any incoming `id` with their own `useId()` value.
+ */
+type LabelledControl = { acceptsFieldLabel?: boolean }
+
+function acceptsFieldLabel(node: ReactNode): node is React.ReactElement<{ label?: string }> {
+  return (
+    React.isValidElement(node) &&
+    (node.type as LabelledControl)?.acceptsFieldLabel === true &&
+    !(node.props as { label?: string }).label
+  )
+}
+
 export function Field({ label, children, inputID }: { label: string; children: ReactNode; inputID?: string }) {
+  // Astryx controls own their label markup, so pass the label down rather than
+  // rendering a second, disconnected <label> around them.
+  if (acceptsFieldLabel(children)) {
+    return React.cloneElement(children, { label })
+  }
+
   const id = inputID || label.toLowerCase().replace(/[^a-z0-9]/g, '-')
   return (
     <AstryxField label={label} inputID={id} width="100%">
@@ -142,19 +184,24 @@ export function Field({ label, children, inputID }: { label: string; children: R
   )
 }
 
-export function Input({ value, onChange, placeholder, type = 'text', required, disabled, className, size: _size, ...props }: React.InputHTMLAttributes<HTMLInputElement>) {
-  const id = props.id || props.name || undefined
+type InputProps = Omit<React.InputHTMLAttributes<HTMLInputElement>, 'size'> & { label?: string }
+
+export function Input({ value, onChange, placeholder, type = 'text', required, disabled, className, label, ...props }: InputProps) {
   return (
     <AstryxTextInput
-      id={id}
-      label=""
-      isLabelHidden
+      label={label ?? ''}
+      isLabelHidden={!label}
       width="100%"
       type={type as any}
       value={String(value ?? '')}
       placeholder={placeholder}
       isRequired={required}
       isDisabled={disabled}
+      // `isRequired` only sets aria-required; the native attribute is what
+      // actually blocks form submission. Astryx doesn't declare it but forwards
+      // unknown props to the underlying <input>.
+      {...({ required } as any)}
+      htmlName={props.name}
       onChange={(val, e) => {
         if (onChange) {
           onChange(e || ({ target: { value: val } } as any))
@@ -165,6 +212,9 @@ export function Input({ value, onChange, placeholder, type = 'text', required, d
     />
   )
 }
+Input.acceptsFieldLabel = true
+
+type SelectProps = Omit<React.SelectHTMLAttributes<HTMLSelectElement>, 'size'> & { label?: string }
 
 export function Select({
   value,
@@ -173,9 +223,9 @@ export function Select({
   required,
   disabled,
   className,
-  size: _size,
+  label,
   ...props
-}: React.SelectHTMLAttributes<HTMLSelectElement>) {
+}: SelectProps) {
   const options: Array<{ value: string; label: string }> = []
   
   React.Children.forEach(children, (child) => {
@@ -187,18 +237,16 @@ export function Select({
     }
   })
 
-  const id = props.id || props.name || undefined
-
   return (
     <AstryxSelector
-      id={id}
-      label=""
-      isLabelHidden
+      label={label ?? ''}
+      isLabelHidden={!label}
       width="100%"
       value={String(value ?? '')}
       options={options}
       isRequired={required}
       isDisabled={disabled}
+      htmlName={props.name}
       onChange={(val) => {
         if (onChange) {
           onChange({ target: { value: val } } as any)
@@ -209,6 +257,7 @@ export function Select({
     />
   )
 }
+Select.acceptsFieldLabel = true
 
 export function Textarea({
   value,
@@ -218,20 +267,22 @@ export function Textarea({
   required,
   disabled,
   className,
+  label,
   ...props
-}: React.TextareaHTMLAttributes<HTMLTextAreaElement>) {
-  const id = props.id || props.name || undefined
+}: React.TextareaHTMLAttributes<HTMLTextAreaElement> & { label?: string }) {
   return (
     <AstryxTextArea
-      id={id}
-      label=""
-      isLabelHidden
+      label={label ?? ''}
+      isLabelHidden={!label}
       width="100%"
       value={String(value ?? '')}
       rows={rows}
       placeholder={placeholder}
       isRequired={required}
       isDisabled={disabled}
+      // See Input: only the native attribute gates form submission.
+      {...({ required } as any)}
+      htmlName={props.name}
       onChange={(val, e) => {
         if (onChange) {
           onChange(e || ({ target: { value: val } } as any))
@@ -242,6 +293,7 @@ export function Textarea({
     />
   )
 }
+Textarea.acceptsFieldLabel = true
 
 export function Checkbox({
   label,
@@ -269,18 +321,26 @@ export function Checkbox({
 
 export function FilePicker({
   label,
+  value,
   onChange,
   required,
   accept,
   placeholder,
 }: {
   label: string
+  /** Pass to control the selection from the parent (e.g. to clear it after upload). */
+  value?: File | null
   onChange: (file: File | null) => void
   required?: boolean
   accept?: string
   placeholder?: string
 }) {
-  const [file, setFile] = useState<File | null>(null)
+  const [internalFile, setInternalFile] = useState<File | null>(null)
+  const isControlled = value !== undefined
+  const file = isControlled ? value : internalFile
+  const setFile = (f: File | null) => {
+    if (!isControlled) setInternalFile(f)
+  }
   return (
     <AstryxFileInput
       label={label}
@@ -329,7 +389,7 @@ export function RadioItem({
 }
 
 export function Badge({ children, variant }: { children: ReactNode; variant?: 'success' | 'info' | 'warning' | 'error' | 'neutral' }) {
-  const text = String(children ?? '')
+  const text = toText(children)
   let computedVariant: 'success' | 'info' | 'warning' | 'error' | 'neutral' = variant ?? 'neutral'
 
   if (!variant) {

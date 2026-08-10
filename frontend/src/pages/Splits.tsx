@@ -106,7 +106,9 @@ export default function Splits() {
               />
             </Field>
             <HStack vAlign="end">
-              <Button disabled={create.isPending}>Create split</Button>
+              {/* The dataset Select is not a native <select>, so `required`
+                  cannot block submission — gate the button instead. */}
+              <Button disabled={create.isPending || !form.dataset_id}>Create split</Button>
             </HStack>
           </Grid>
         </form>

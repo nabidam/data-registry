@@ -386,6 +386,7 @@ export default function Imports() {
                     <VStack gap={2}>
                       <FilePicker
                         label="Dataset File *"
+                        value={file}
                         required
                         accept=".csv,.tsv,.parquet,.json,.jsonl,.tmx,.xlsx"
                         placeholder="Select dataset file to inspect & upload"

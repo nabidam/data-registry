@@ -89,7 +89,9 @@ export default function Snapshots() {
               />
             </Field>
             <HStack vAlign="end">
-              <Button disabled={create.isPending}>Build snapshot</Button>
+              {/* The dataset Select is not a native <select>, so `required`
+                  cannot block submission — gate the button instead. */}
+              <Button disabled={create.isPending || !form.dataset_id}>Build snapshot</Button>
             </HStack>
           </Grid>
         </form>
