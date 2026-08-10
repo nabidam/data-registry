@@ -190,6 +190,9 @@ class DatasetReservationIn(BaseModel):
     target_count: int | None = Field(default=None, ge=0)
     seed: int = 42
     contamination_scope: Literal["registry", "composition"] = "registry"
+    # Which rows may be compared once the scan corpus is chosen. Defaulted, so
+    # payloads written before this field still validate.
+    comparison_scope: Literal["pair", "source_language", "target_language", "any"] = "pair"
     confirm_irreversible: Literal[True]
 
 
@@ -203,6 +206,7 @@ class DatasetReservationOut(ORMModel):
     target_count: int | None
     seed: int
     contamination_scope: str
+    comparison_scope: str
     report: dict | None
     error: str | None
     created_at: datetime

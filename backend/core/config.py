@@ -60,6 +60,11 @@ class Settings(BaseSettings):
     evaluation_percent: float = 2.0
     evaluation_max_samples: int = 5_000
     evaluation_selector: str = "contamination_safe"  # see services/evaluation/selectors.py
+    # Which rows the contamination scan may compare with each other:
+    # pair | source_language | target_language | any. Pair isolation is the default
+    # because thresholds are calibrated for same-language duplicates; see
+    # config/evaluation_reservation.yaml.
+    evaluation_comparison_scope: str = "pair"
     random_seed: int = 42
 
     cors_origins: list[str] = ["http://localhost:5173", "http://localhost:3000"]

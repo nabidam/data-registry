@@ -156,7 +156,12 @@ class DatasetReservation(Base, TimestampMixin):
     max_samples: Mapped[int] = mapped_column(Integer, default=10_000)
     target_count: Mapped[int | None] = mapped_column(Integer)
     seed: Mapped[int] = mapped_column(Integer, default=42)
+    # Two orthogonal axes. contamination_scope decides which corpus is scanned;
+    # comparison_scope decides which rows within it may be compared with each other.
     contamination_scope: Mapped[str] = mapped_column(String(32), default="registry")
+    comparison_scope: Mapped[str] = mapped_column(
+        String(32), default="pair", server_default="pair", nullable=False
+    )
     report: Mapped[dict | None] = mapped_column(JSONB)
     error: Mapped[str | None] = mapped_column(Text)
 

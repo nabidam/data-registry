@@ -31,6 +31,7 @@ class ReservationPolicy:
     max_samples: int
     selector: str
     seed: int
+    comparison_scope: str = "pair"
 
     @classmethod
     def resolve(
@@ -39,12 +40,14 @@ class ReservationPolicy:
         max_samples: int | None = None,
         selector: str | None = None,
         seed: int | None = None,
+        comparison_scope: str | None = None,
     ) -> "ReservationPolicy":
         return cls(
             percent=settings.evaluation_percent if percent is None else percent,
             max_samples=settings.evaluation_max_samples if max_samples is None else max_samples,
             selector=selector or settings.evaluation_selector,
             seed=settings.random_seed if seed is None else seed,
+            comparison_scope=comparison_scope or settings.evaluation_comparison_scope,
         )
 
     def as_dict(self) -> dict:
@@ -53,6 +56,7 @@ class ReservationPolicy:
             "evaluation_max_samples": self.max_samples,
             "evaluation_selector": self.selector,
             "random_seed": self.seed,
+            "comparison_scope": self.comparison_scope,
         }
 
 

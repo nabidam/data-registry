@@ -11,6 +11,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from uuid import uuid4
 
@@ -447,10 +448,13 @@ async def _ingest_large_delimited(
             shards_total=shard_count,
         )
         contamination_reference = await asyncio.to_thread(
-            prepare_contamination_reference,
-            selected_rows,
-            contamination_config,
-            reference_progress,
+            partial(
+                prepare_contamination_reference,
+                selected_rows,
+                contamination_config,
+                reference_progress,
+                scope=policy.comparison_scope,
+            )
         )
 
     parquet_manifest: list[dict[str, object]] = []

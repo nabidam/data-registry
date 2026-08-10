@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import logging
 from datetime import UTC, datetime
+from functools import partial
 
 import polars as pl
 from sqlalchemy import insert, update
@@ -153,7 +154,13 @@ async def run_dataset_reservation(
             config = load_contamination_safe_config()
             selected_rows = candidates.filter(pl.col("sample_id").is_in(reserved_ids))
             reference = await asyncio.to_thread(
-                prepare_contamination_reference, selected_rows, config, None
+                partial(
+                    prepare_contamination_reference,
+                    selected_rows,
+                    config,
+                    None,
+                    scope=reservation.comparison_scope,
+                )
             )
             if reservation.contamination_scope == "registry":
                 scan_context = await make_context(
@@ -196,6 +203,7 @@ async def run_dataset_reservation(
             "quarantined": len(quarantined_ids.difference(reserved_ids)),
             "selected_ids_sha256": _id_hash(reserved_ids),
             "contamination_scope": reservation.contamination_scope,
+            "comparison_scope": reservation.comparison_scope,
             "contamination_rows_scanned": scanned_rows,
             "semantic_rows_checked": semantic_checked,
             "selection": selector_report,
