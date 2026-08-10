@@ -113,4 +113,49 @@ never reach the embedding stage at all.
 
 Registry-wide scanning is no longer the dangerous default it was, but
 `comparison_scope: any` still carries the original warning — a new reservation can
-quarantine another pair's training data, permanently.
+quarantine another pair's training data.
+
+## Failure handling
+
+A policy mistake must not be discovered after an hour of work. `validate_policy`
+runs at the start of selection, at reference preparation, and when a reservation is
+requested, and reports every problem at once. It covers the scope and namespace
+enumerations, cosine ranges, the shape of `pairs`, and — for the base policy and
+every merged pair override — that length buckets ascend and that the share list
+matches the bucket count. Before this, a mismatched override surfaced as a
+`zip()` length error inside quota allocation, after LaBSE had encoded the pool;
+a misspelled `document_namespace` did not surface at all, silently returning
+un-namespaced IDs.
+
+Annotation refuses to return a frame with unassigned slots. Callers index the
+annotated list positionally against their records, so a short list would shift
+every later index onto a different sample — a silent corruption worse than a crash.
+
+Imports are already atomic: sample rows are copied inside the same transaction
+that marks the batch ready, so a failure rolls the whole attempt back and the batch
+is retried or marked failed with its error. Nothing partial survives.
+
+## Reversibility
+
+Reservation and quarantine stay permanent for ordinary operation — that invariant
+is what stops a snapshot from ever seeing an evaluated row. But permanence with no
+recovery path means a wrong reservation is unfixable, and a wrong reservation is
+exactly what a change of this size risks.
+
+A run therefore records `applied_at`, the single instant stamped onto every row it
+protected. Because `_set_allocations` only promotes rows that are still
+`TRAINABLE`, that timestamp identifies precisely the rows this run changed and
+none that an earlier run had already claimed — attribution without storing
+millions of sample ids.
+
+`revert_dataset_reservation` returns those rows to `TRAINABLE`. It refuses when
+the reservation is not the most recent completed one, when an evaluation set was
+built from it, when another reservation or a snapshot build is in flight, or when
+`applied_at` is absent. It matches on both the timestamp and the allocation the run
+assigned, so a row since re-classified by a human is never overwritten; an ignored
+row keeps `IGNORED` but loses the protection it would otherwise be restored to.
+The run is marked `reverted`, which the evaluation-set route already rejects, and
+the reversal is recorded in the reservation report.
+
+Batch-level mistakes are not covered here. They keep their existing reversal:
+reject the batch and purge it.

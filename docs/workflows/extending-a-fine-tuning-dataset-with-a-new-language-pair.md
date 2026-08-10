@@ -179,6 +179,28 @@ if someone later:
 A dataset-level reservation can cause the first case when its `comparison_scope`
 is widened past `pair`, or when a Russian row's Persian target exactly duplicates
 an English row's Persian target.
+
+## Recovering from a reservation that went wrong
+
+A reservation that quarantined more than intended can be reverted, returning its
+samples to trainable. Open the dataset's Reservation tab and choose **Revert** on
+the run. The impact panel shows how many reserved and quarantined samples still
+carry that run's protection, and lists anything that blocks the revert.
+
+The revert is restricted on purpose:
+
+- only the most recent completed reservation may be reverted; revert newer runs
+  first;
+- an evaluation set built from the reservation blocks it — delete the set first;
+- no reservation or snapshot build may be in flight;
+- reservations that ran before this feature existed cannot be attributed to their
+  rows and must be corrected by hand.
+
+Rows that someone has re-classified since the run are left untouched. A reverted
+reservation can no longer be used to create an evaluation set.
+
+This covers dataset-level reservations. A bad *import* is undone differently:
+reject the batch and purge it, which removes its samples and objects together.
 The registry records overlap between a later reservation and an old snapshot as
 historical contamination. It does not rewrite the old snapshot.
 
