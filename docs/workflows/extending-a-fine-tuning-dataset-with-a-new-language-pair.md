@@ -44,6 +44,14 @@ the recipe used for that snapshot.
 Set `src_lang` to `ru` and `tgt_lang` to `fa` for each import. Keep
 `contamination_safe` as the import selector.
 
+The selector resolves a language profile from those two tags. That profile
+decides how Russian text is normalized and tokenized, how its acronyms and
+numeric units are detected, and which hard-phenomena quotas apply at all. A
+feature Russian cannot express is dropped from the quota rather than pursued with
+an English detector, and the batch report lists it under `unsupported_features`.
+Nothing needs configuring for `ru`; unknown languages fall back to a conservative
+profile that measures only script-independent features.
+
 Each import reserves an evaluation slice before the batch can contribute to a
 training snapshot. The import also quarantines document matches and other
 contamination risks found within that batch. Those reserved and quarantined
@@ -68,11 +76,32 @@ For one selection across all new Russian batches, run a dataset-level
 `contamination_safe` reservation on the Russian-only dataset. Select the target
 count or percentage, seed, and `composition` contamination scope.
 
-`composition` scope scans the Russian dataset for leakage risks. `registry`
-scope scans all ready batches and can quarantine matching English rows. A
-registry-wide scan provides a broader contamination guarantee, but it can
-change which English rows qualify for the next training snapshot. Use it only
-when that tradeoff fits the experiment.
+Two independent scopes control the contamination scan.
+
+`contamination_scope` decides which corpus is scanned. `composition` scans the
+Russian dataset. `registry` scans all ready batches.
+
+`comparison_scope` decides which rows inside that corpus may be compared with
+the reserved Russian rows. It defaults to `pair`, so Russian evaluation rows are
+compared against Russian training rows and English rows are left alone. This is
+the right setting for almost every expansion: similarity thresholds are
+calibrated for same-language duplicates, and LaBSE scores an ordinary
+translation and its source high enough that a wider scope can quarantine valid
+English data.
+
+Widen it only for a specific reason:
+
+- `target_language` also compares the Persian side across source languages. Use
+  it when you intend to treat the same Persian material arriving via several
+  source languages as contamination. It can quarantine English rows.
+- `source_language` compares pairs sharing the Russian source, such as `ru-fa`
+  against `ru-en`.
+- `any` compares everything. Advanced, and it can quarantine English rows.
+
+Regardless of scope, a training row whose target is an exact duplicate of a
+reserved row's target is always quarantined, in any language pair. That check is
+cheap and unambiguous: the model would otherwise be trained on output it is
+later evaluated on.
 
 Dataset-level reservation selects from rows that remain `TRAINABLE` after
 import-time reservation. It does not select the rows that the imports already
@@ -147,7 +176,9 @@ if someone later:
 - marks it ignored;
 - changes the English batch rules, composition seed, or filters.
 
-A dataset-level reservation with registry scope can cause the first two cases.
+A dataset-level reservation can cause the first case when its `comparison_scope`
+is widened past `pair`, or when a Russian row's Persian target exactly duplicates
+an English row's Persian target.
 The registry records overlap between a later reservation and an old snapshot as
 historical contamination. It does not rewrite the old snapshot.
 
