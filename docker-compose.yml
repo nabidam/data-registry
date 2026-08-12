@@ -30,8 +30,6 @@ services:
   backend:
     build:
       context: ./backend
-      args:
-        INSTALL_EVALUATION: ${INSTALL_EVALUATION:-false}
     command: ["/app/entrypoint.sh"]
     environment:
       DATABASE_URL: ${DATABASE_URL}
@@ -57,7 +55,6 @@ services:
       - "8001:8000"
     volumes:
       - ./backend:/app
-      - backendvenv:/app/.venv
       - ${HOST_HF_CACHE_DIR:-${HOME}/.cache/huggingface}:/root/.cache/huggingface
     restart: unless-stopped
     healthcheck:
@@ -80,8 +77,6 @@ services:
   worker:
     build:
       context: ./backend
-      args:
-        INSTALL_EVALUATION: ${INSTALL_EVALUATION:-false}
     command: ["/app/entrypoint.sh", "worker"]
     environment:
       DATABASE_URL: ${DATABASE_URL}
@@ -104,7 +99,6 @@ services:
       https_proxy: ""
     volumes:
       - ./backend:/app
-      - backendvenv:/app/.venv
       - ${HOST_HF_CACHE_DIR:-${HOME}/.cache/huggingface}:/root/.cache/huggingface
       - importwork:/tmp/mtreg
     restart: unless-stopped
@@ -140,4 +134,3 @@ services:
 volumes:
   miniodata:
   importwork:
-  backendvenv:

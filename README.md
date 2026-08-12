@@ -25,23 +25,23 @@ For a self-contained local stack, including PostgreSQL, use the full Compose fil
 docker compose -f docker-compose.full.yml up --build
 ```
 
-This local Compose build deliberately omits the optional evaluation group, so the host does not
-need LaBSE, PyTorch, or MinHash installed. Use `heuristic` or `random` reservations locally. To
-build the production backend image with the complete evaluation pipeline, run:
+The build installs every dependency group, including the evaluation group (LaBSE, PyTorch,
+MinHash), so `contamination_safe` works out of the box. Dependencies are resolved only at image
+build time: the environment lives at `/opt/venv`, outside the bind-mounted `/app`, and the
+container never installs anything at startup. Changing a dependency therefore requires a rebuild.
+To build a lean image without the evaluation stack:
 
 ```bash
-docker build --build-arg INSTALL_EVALUATION=true -t mtdataregistry-backend:full ./backend
+docker build --build-arg UV_SYNC_ARGS="--no-dev --no-group evaluation" -t mtdataregistry-backend:slim ./backend
 ```
 
-The full image runs `contamination_safe`; its first eligible import may download the LaBSE model
+The default image runs `contamination_safe`; its first eligible import may download the LaBSE model
 into the host Hugging Face cache, mounted at `/root/.cache/huggingface` in the backend container.
 Later container runs reuse it. Override the host location with `HOST_HF_CACHE_DIR` when needed.
 Both image variants install strictly from the committed `backend/uv.lock` file.
-Compose runs the code and dependency environment baked into each image; it does
-not bind-mount the source tree over `/app`. Rebuild after changing source code.
-
-For either Compose setup, set `INSTALL_EVALUATION=true` in `.env` and rebuild with
-`docker compose up --build` to include the optional evaluation dependencies.
+`docker-compose.full.yml` runs the code baked into the image; `docker-compose.yml` bind-mounts
+`./backend` over `/app` so source edits are live. Either way the Python environment comes from
+the image at `/opt/venv` and is never rebuilt at container startup.
 
 | Service        | URL                    |
 | -------------- | ---------------------- |
@@ -161,7 +161,7 @@ The default policy enables MinHash and LaBSE (`sentence-transformers/LaBSE`). It
 dependencies (`numpy`, `scikit-learn`, `datasketch`, `sentence-transformers`, and CPU-compatible
 `torch`) are isolated in the backend `evaluation` dependency group. The ordinary API can run
 without them; install the group with `cd backend && uv sync --group evaluation` before using
-`contamination_safe`, or build the production image with `INSTALL_EVALUATION=true`.
+`contamination_safe` outside Docker. The Docker image installs them by default.
 On the first eligible `contamination_safe` import, sentence-transformers downloads the configured
 model into its Hugging Face cache if it is absent. Later imports reuse that cache. This fetch does
 not download a Docker image. Set `embeddings.enabled: false` only when an explicit TF-IDF fallback

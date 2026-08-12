@@ -48,8 +48,6 @@ services:
   backend:
     build:
       context: ./backend
-      args:
-        INSTALL_EVALUATION: ${INSTALL_EVALUATION:-false}
     command: ["/app/entrypoint.sh"]
     environment:
       DATABASE_URL: ${DATABASE_URL}
@@ -86,8 +84,6 @@ services:
   worker:
     build:
       context: ./backend
-      args:
-        INSTALL_EVALUATION: ${INSTALL_EVALUATION:-false}
     command: ["/app/entrypoint.sh", "worker"]
     environment:
       DATABASE_URL: ${DATABASE_URL}

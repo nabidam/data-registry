@@ -24,7 +24,11 @@ The backend isolates `numpy`, `scikit-learn`, `datasketch`, `sentence-transforme
 CPU-compatible `torch` in its `evaluation` dependency group. This keeps an ordinary local API
 installation lightweight; `contamination_safe` fails with an install instruction until the group is
 present. The Docker build defaults to a slim local image; production passes
-`--build-arg INSTALL_EVALUATION=true` to install the group. The policy enables MinHash and LaBSE by
+`--build-arg INSTALL_EVALUATION=true` to install the group. (Superseded: the image now installs
+every group by default and a lean build opts out with
+`--build-arg UV_SYNC_ARGS="--no-dev --no-group evaluation"`. The environment also moved to
+`/opt/venv` so a bind-mounted source tree cannot shadow it and force a reinstall at startup.)
+The policy enables MinHash and LaBSE by
 default. Both variants install only the committed `uv.lock` resolution. During the first eligible
 import, sentence-transformers retrieves
 `sentence-transformers/LaBSE` into the Hugging Face model cache when it is absent; later imports
