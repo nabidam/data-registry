@@ -153,8 +153,12 @@ class _ReferenceGroup:
     source_keys: set[str] = field(default_factory=set)
     target_keys: set[str] = field(default_factory=set)
     document_ids: set[str] = field(default_factory=set)
+    # Union of every reserved row's shingles: the cheap first gate.
     source_shingles: set[str] = field(default_factory=set)
     target_shingles: set[str] = field(default_factory=set)
+    # shingle -> which reserved rows contain it, for the precise second gate.
+    source_shingle_rows: dict[str, set[int]] = field(default_factory=lambda: defaultdict(set))
+    target_shingle_rows: dict[str, set[int]] = field(default_factory=lambda: defaultdict(set))
     source_texts: list[str] = field(default_factory=list)
     target_texts: list[str] = field(default_factory=list)
     source_embeddings: Any = None
@@ -187,6 +191,10 @@ class ContaminationScanResult:
     semantic_prefilter_rows: int
     semantic_checked_rows: int
     exact_target_rows: int = 0
+    # Rows the cheap union gate admitted. The gap between this and
+    # semantic_prefilter_rows is what the per-reference-row gate saved in
+    # transformer inference.
+    semantic_gate_rows: int = 0
 
 
 
@@ -691,8 +699,18 @@ def prepare_contamination_reference(
         group.target_keys.add(target_key)
         if hold_documents:
             group.document_ids.add(_document_id(record, separator, namespace))
-        group.source_shingles.update(_shingles(source, prefilter_size, profile))
-        group.target_shingles.update(_shingles(target, prefilter_size, profile, side="target"))
+        # Ordinal of this reserved row within its group, so the scan can tell
+        # "two shingles shared with one reserved row" from "one shingle each
+        # shared with two different ones".
+        ordinal = len(group.source_texts)
+        source_shingles = _shingles(source, prefilter_size, profile)
+        target_shingles = _shingles(target, prefilter_size, profile, side="target")
+        group.source_shingles.update(source_shingles)
+        group.target_shingles.update(target_shingles)
+        for shingle in source_shingles:
+            group.source_shingle_rows[shingle].add(ordinal)
+        for shingle in target_shingles:
+            group.target_shingle_rows[shingle].add(ordinal)
         group.source_texts.append(source)
         group.target_texts.append(target)
 
@@ -787,6 +805,47 @@ def _similarity_hits(
     return hits
 
 
+def _shingle_gate(
+    shingles: set[str],
+    union: set[str],
+    by_row: Mapping[str, set[int]],
+    minimum: int,
+    require_same_row: bool,
+) -> tuple[bool, bool]:
+    """Two gates, cheapest first: ``(passed the union gate, passed both)``.
+
+    The union intersection is one set operation and rejects most of the corpus.
+    Only what survives pays for the second stage, which asks the question that
+    actually matters. The union test is satisfied by one shingle shared with
+    reserved row A and another shared with row B — evidence of near-duplication
+    with neither — and it sent 1,960,272 rows, 31% of the registry, to LaBSE to
+    protect 399.
+
+    Near-duplicate recall is essentially unchanged, because a row similar enough
+    to be quarantined shares plenty of shingles with the one row it resembles.
+    What this does give up is the case ADR 001 already disclaimed: a semantic
+    rewrite with little shared phrasing, which could previously scrape through on
+    two coincidental shingles from two different reserved rows and then be
+    confirmed by cosine. A narrow loss, but a real one —
+    ``semantic_prefilter_require_same_reference_row`` turns it off.
+
+    Both flags are returned so the reservation report can show what the second
+    gate saved, rather than only what survived it.
+    """
+    shared = shingles & union
+    if len(shared) < minimum:
+        return False, False
+    if not require_same_row:
+        return True, True
+    counts: Counter[int] = Counter()
+    for shingle in shared:
+        for ordinal in by_row.get(shingle, ()):
+            counts[ordinal] += 1
+            if counts[ordinal] >= minimum:
+                return True, True
+    return True, False
+
+
 def scan_full_corpus_contamination(
     rows: pl.DataFrame,
     reference: ContaminationReference,
@@ -817,8 +876,12 @@ def scan_full_corpus_contamination(
     )
     prefilter_size = max(1, int(contamination.get("semantic_prefilter_shingle_size", 3)))
     prefilter_minimum = max(1, int(contamination.get("semantic_prefilter_min_shared_shingles", 2)))
+    require_same_row = bool(
+        contamination.get("semantic_prefilter_require_same_reference_row", True)
+    )
     check_exact_target = bool(contamination.get("exact_target_duplication", True))
     exact_target_rows = 0
+    gated_rows = 0
     started = time.perf_counter()
     log.info(
         "Full corpus scan: checking %s rows against %s selected in %s group(s); "
@@ -859,18 +922,28 @@ def scan_full_corpus_contamination(
             contaminated.add(sample_id)
             continue
 
-        if (
-            len(_shingles(source, prefilter_size, profile) & group.source_shingles)
-            >= prefilter_minimum
-        ):
+        source_gated, source_confirmed = _shingle_gate(
+            _shingles(source, prefilter_size, profile),
+            group.source_shingles,
+            group.source_shingle_rows,
+            prefilter_minimum,
+            require_same_row,
+        )
+        target_gated = target_confirmed = False
+        if not source_confirmed:
+            target_gated, target_confirmed = _shingle_gate(
+                _shingles(target, prefilter_size, profile, side="target"),
+                group.target_shingles,
+                group.target_shingle_rows,
+                prefilter_minimum,
+                require_same_row,
+            )
+        if source_gated or target_gated:
+            gated_rows += 1
+        if source_confirmed:
             candidate_groups[key][0].append(record)
             source_candidates.append(record)
-        elif (
-            len(
-                _shingles(target, prefilter_size, profile, side="target") & group.target_shingles
-            )
-            >= prefilter_minimum
-        ):
+        elif target_confirmed:
             candidate_groups[key][1].append(record)
             target_candidates.append(record)
 
@@ -906,6 +979,7 @@ def scan_full_corpus_contamination(
             semantic_prefilter_rows=prefiltered,
             semantic_checked_rows=0,
             exact_target_rows=exact_target_rows,
+            semantic_gate_rows=gated_rows,
         )
 
     source_threshold, target_threshold = _side_thresholds(
@@ -949,6 +1023,7 @@ def scan_full_corpus_contamination(
         semantic_prefilter_rows=prefiltered,
         semantic_checked_rows=checked,
         exact_target_rows=exact_target_rows,
+        semantic_gate_rows=gated_rows,
     )
 
 

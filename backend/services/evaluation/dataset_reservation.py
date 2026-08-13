@@ -207,6 +207,8 @@ async def run_dataset_reservation(
             else set()
         )
         semantic_checked = 0
+        semantic_prefiltered = 0
+        semantic_gated = 0
         scanned_rows = 0
 
         if (
@@ -245,6 +247,8 @@ async def run_dataset_reservation(
                 )
                 scanned_rows += frame.height
                 semantic_checked += result.semantic_checked_rows
+                semantic_prefiltered += result.semantic_prefilter_rows
+                semantic_gated += result.semantic_gate_rows
                 quarantined_ids.update(result.quarantined_ids)
 
         reservation.applied_at = await _set_allocations(
@@ -271,6 +275,10 @@ async def run_dataset_reservation(
             "comparison_scope": reservation.comparison_scope,
             "contamination_rows_scanned": scanned_rows,
             "semantic_rows_checked": semantic_checked,
+            # Rows the cheap shingle gate admitted, before the per-reference-row
+            # check. The gap between the two is what that check saves in LaBSE.
+            "semantic_rows_prefiltered": semantic_prefiltered,
+            "semantic_rows_shingle_gated": semantic_gated,
             "selection": selector_report,
         }
         reservation.status = "ready"

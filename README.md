@@ -63,6 +63,11 @@ for the backend healthcheck and never runs Alembic itself.
    (`batches/batch_N/attempt_ID/part-*.parquet`) with per-sample metadata copied into Postgres. Set
    `IMPORT_UPLOAD_PART_SIZE_MB` (minimum 5), `IMPORT_BATCH_ROWS`, and `PARQUET_SHARD_SIZE_MB`
    (default 256) to suit the deployment's proxy, memory, and object-size limits.
+   Rows are de-duplicated within an import on a language-aware key rather than on raw text, so
+   pairs differing only in encoding — Persian `ي`/`ی` and `ك`/`ک`, Arabic-Indic against Western
+   digits, diacritics, ZWNJ — collapse to one. Raw comparison left roughly 105,000 such pairs in a
+   6.3M-row registry. De-duplication is still per-import: the same source arriving in two batches
+   survives.
 3. **Evaluation reservation** — part of the same import: the selection pipeline holds a
    slice of every batch back as `RESERVED_EVALUATION` *before* the batch is eligible for
    training. Nothing downstream can opt out of this.
@@ -138,14 +143,26 @@ therefore runs LaBSE over 10,000 candidates rather than all 50,000.
 After selection, the worker streams over **every row in the complete corpus** and quarantines rows
 from selected documents and exact evaluation duplicates. A row becomes a semantic-verification
 candidate when its source or target shares at least two normalized three-token shingles with the
-corresponding side of the reserved evaluation pool. Candidate source text is then verified with
-LaBSE cosine similarity before quarantine. This catches a shared four-token passage or separated
-phrase overlap that the previous five-token gate missed, without admitting every row containing one
-generic trigram. LaBSE—not lexical overlap—makes the quarantine decision. A semantic rewrite
-without enough shared phrasing can still evade this scalable prefilter; use a stricter offline audit
-when that residual risk is unacceptable. Deployments can set
-`contamination.semantic_prefilter_min_shared_shingles: 1` for maximum lexical recall at the cost of
-more LaBSE work, especially for short or repetitive text.
+corresponding side of the reserved evaluation pool, **and those shingles come from one reserved
+row**. The second condition matters: counted against the pooled shingles of every reserved row, one
+shingle shared with row A and another shared with row B passes while being evidence of duplication
+with neither, which sent 31% of a 6.3M-row registry to LaBSE to protect 399 reserved rows. Candidate
+text is then verified with LaBSE cosine similarity before quarantine. LaBSE—not lexical
+overlap—makes the quarantine decision. A semantic rewrite without enough shared phrasing can still
+evade this scalable prefilter; use a stricter offline audit when that residual risk is unacceptable.
+Deployments can set `contamination.semantic_prefilter_min_shared_shingles: 1` for maximum lexical
+recall at the cost of more LaBSE work, or
+`contamination.semantic_prefilter_require_same_reference_row: false` to score shingles against the
+pooled set as before.
+
+Document holdout removes **every chunk of a held document** from training, so its cost is the size
+of the documents a benchmark touches rather than the size of the benchmark.
+`selection.max_test_documents` bounds how many documents a benchmark spans and says nothing about
+that cost; `selection.max_holdout_share` (default `0.01`) and `selection.max_holdout_rows` bound it
+directly, and documents are chosen by benchmark value per row spent so the budget buys diversity
+instead of truncating it. Without a budget, 30 documents averaging 8,051 chunks quarantined 241,525
+rows to reserve 399. The reservation report records `holdout.budget_rows`, `holdout.actual_rows`,
+and `holdout.rows_per_reserved_row`.
 
 Its policy lives in `backend/config/evaluation_reservation.yaml`; set
 `EVALUATION_RESERVATION_CONFIG` to a deployment copy. The import target still comes from

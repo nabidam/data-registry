@@ -106,6 +106,16 @@ contamination:
   # overlap while avoiding a flood of candidates from one generic phrase.
   semantic_prefilter_shingle_size: 3
   semantic_prefilter_min_shared_shingles: 2
+  # Whether those shared shingles must come from one reserved row. Counting them
+  # against the union of every reserved row's shingles admits a row that shares
+  # one shingle with reserved row A and another with row B, which is evidence of
+  # duplication with neither: a dataset reservation embedded 1,960,272 rows, 31%
+  # of the registry, to protect 399. Near-duplicate recall is essentially
+  # unchanged, since a row close enough to be quarantined shares many shingles
+  # with the single row it resembles. The narrow loss is a semantic rewrite with
+  # little shared phrasing, which this rejects before embedding and the union
+  # gate would occasionally have caught. Set false to restore that.
+  semantic_prefilter_require_same_reference_row: true
 
 splits:
   dev_test_split: true
