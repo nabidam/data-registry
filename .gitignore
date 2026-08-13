@@ -11,3 +11,4 @@ dist/
 .brana
 .impeccable
 mtdataregistry_*.tar.gz
+docs/adr
