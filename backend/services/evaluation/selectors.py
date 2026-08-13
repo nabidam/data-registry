@@ -8,7 +8,7 @@ replace the default without touching the ingestion pipeline — the only contrac
 is the ``Selector`` signature below.
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from math import ceil
 
 import polars as pl
@@ -21,8 +21,14 @@ from services.evaluation.contamination_safe import (
 from services.evaluation.reservation_config import load_contamination_safe_config
 
 # (rows, n, seed) -> reservation selection. ``rows`` is the canonical schema.
+#
+# ``document_sizes`` and ``corpus_rows`` describe the corpus the reservation will
+# be applied to, which is larger than ``rows`` whenever selection runs on a
+# bounded candidate pool. Only contamination_safe uses them, to bound what
+# document holdout costs; the others accept and ignore them so every selector
+# keeps one signature.
 Selector = Callable[
-    [pl.DataFrame, int, int, SelectionProgress | None],
+    ...,
     list[int] | SelectionResult,
 ]
 
@@ -86,6 +92,9 @@ def heuristic_select(
     n: int,
     seed: int,
     progress: SelectionProgress | None = None,
+    *,
+    document_sizes: Mapping[str, int] | None = None,
+    corpus_rows: int | None = None,
 ) -> list[int]:
     """Default strategy: score for benchmark quality, then spread across strata.
 
@@ -129,6 +138,9 @@ def random_select(
     n: int,
     seed: int,
     progress: SelectionProgress | None = None,
+    *,
+    document_sizes: Mapping[str, int] | None = None,
+    corpus_rows: int | None = None,
 ) -> list[int]:
     """Uniform sampling. Kept as an explicit opt-in baseline, never the default."""
     if n <= 0 or rows.height == 0:
@@ -147,9 +159,20 @@ def contamination_safe_select(
     n: int,
     seed: int,
     progress: SelectionProgress | None = None,
+    *,
+    document_sizes: Mapping[str, int] | None = None,
+    corpus_rows: int | None = None,
 ) -> SelectionResult:
     """Ported test-set selection with document and near-duplicate protection."""
-    return safe_select(rows, n, seed, load_contamination_safe_config(), progress)
+    return safe_select(
+        rows,
+        n,
+        seed,
+        load_contamination_safe_config(),
+        progress,
+        document_sizes=document_sizes,
+        corpus_rows=corpus_rows,
+    )
 
 
 SELECTORS: dict[str, Selector] = {

@@ -119,6 +119,17 @@ def _check_selection(selection: Any, where: str, problems: list[str]) -> None:
             f"length_buckets defines {len(edges) - 1} buckets"
         )
 
+    share = selection.get("max_holdout_share")
+    if share is not None and not (isinstance(share, int | float) and 0.0 < float(share) <= 1.0):
+        problems.append(
+            f"{where}.selection.max_holdout_share must be a fraction in (0, 1]; got {share!r}"
+        )
+
+    for key in ("max_holdout_rows", "max_test_documents"):
+        value = selection.get(key)
+        if value is not None and not (isinstance(value, int) and value > 0):
+            problems.append(f"{where}.selection.{key} must be a positive integer or null")
+
     allocation = selection.get("domain_allocation")
     if allocation not in DOMAIN_ALLOCATIONS:
         problems.append(

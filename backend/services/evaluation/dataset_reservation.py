@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import logging
+from collections import Counter
 from datetime import UTC, datetime
 from functools import partial
 
@@ -18,6 +19,7 @@ from services.dataset_builder.filters import DatasetFilters
 from services.evaluation.contamination import scan_snapshots
 from services.evaluation.contamination_safe import (
     SelectionResult,
+    document_key,
     prepare_contamination_reference,
     scan_full_corpus_contamination,
 )
@@ -101,6 +103,48 @@ async def _record_selected_rows(
         )
 
 
+async def _document_sizes(
+    session: AsyncSession,
+    definition: DatasetDefinition,
+    contamination_scope: str,
+) -> tuple[dict[str, int], int]:
+    """Chunk count per document over the corpus holdout will be applied to.
+
+    One grouped scan, no embeddings. Documents appearing once are omitted: they
+    cost a single row, and keeping millions of such entries in memory to say so
+    would be the expensive part of a cheap measurement.
+    """
+    if contamination_scope == "registry":
+        context = await make_context(session, DatasetFilters(), None, Allocation.TRAINABLE)
+    else:
+        context = await context_for_definition(session, definition, Allocation.TRAINABLE)
+    try:
+        # Grouped in SQL, keyed in Python: document identity is namespaced by
+        # source or batch and split on the configured separator, and that rule
+        # lives in one place.
+        frame = context.sql(
+            "SELECT source_id, batch_id, document_id, count(*) AS rows FROM {rel} "
+            "WHERE document_id IS NOT NULL AND document_id <> '' GROUP BY 1, 2, 3"
+        ).pl()
+        total = int(context.sql("SELECT count(*) FROM {rel}").fetchone()[0])
+    finally:
+        context.close()
+    config = load_contamination_safe_config()
+    counted: Counter[str] = Counter()
+    for record in frame.iter_rows(named=True):
+        counted[document_key(record, config)] += int(record["rows"])
+    # A single-chunk document costs one row; holding millions of those in memory
+    # to say so would be the expensive part of a cheap measurement.
+    sizes = {document: rows for document, rows in counted.items() if rows > 1}
+    log.info(
+        "Document sizes: %s multi-chunk documents over %s rows (scope=%s)",
+        len(sizes),
+        total,
+        contamination_scope,
+    )
+    return sizes, total
+
+
 async def run_dataset_reservation(
     session: AsyncSession,
     reservation: DatasetReservation,
@@ -133,12 +177,24 @@ async def run_dataset_reservation(
             "SELECT * FROM {rel} ORDER BY "
             f"hash(sample_id::VARCHAR || '-{reservation.seed}') LIMIT {candidate_limit}"
         ).pl()
+        # Document holdout removes every chunk of a held document from the corpus
+        # the contamination scan covers, not just from the candidate pool. Sizes
+        # are therefore measured over that same corpus: without them selection
+        # sees a document's rare appearances in a bounded pool and cannot know it
+        # is about to quarantine thousands of rows.
+        document_sizes, corpus_rows = await _document_sizes(
+            session, definition, reservation.contamination_scope
+        )
         selection = await asyncio.to_thread(
-            get_selector(reservation.selector),
-            candidates,
-            target,
-            reservation.seed,
-            None,
+            partial(
+                get_selector(reservation.selector),
+                candidates,
+                target,
+                reservation.seed,
+                None,
+                document_sizes=document_sizes,
+                corpus_rows=corpus_rows,
+            )
         )
         reserved_ids = (
             list(selection.reserved_ids)

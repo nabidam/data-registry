@@ -24,7 +24,7 @@ import math
 import random
 import time
 from collections import Counter, defaultdict
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -260,6 +260,17 @@ def _document_id(row: dict[str, Any], separator: str, namespace: str = "source")
     raise ValueError(
         f"unknown document namespace {namespace!r}; available: {list(DOCUMENT_NAMESPACES)}"
     )
+
+
+def document_key(record: Mapping[str, Any], config: Mapping[str, Any]) -> str:
+    """Namespaced document identity, for callers measuring holdout cost.
+
+    Selection keys documents by this, so anything sizing those documents has to
+    key them the same way. Exposed rather than reimplemented in SQL, because a
+    second implementation of an identity rule is a second thing to keep in step.
+    """
+    separator = str(config.get("input", {}).get("id_separator", ":"))
+    return _document_id(dict(record), separator, _document_namespace(dict(config)))
 
 
 def _document_namespace(config: dict[str, Any]) -> str:
@@ -1006,76 +1017,205 @@ def _dedup_embeddings(
     )
 
 
-def _candidate_documents(
-    rows: list[_Row], indexes: list[int], config: dict[str, Any], rng: random.Random
-) -> list[int]:
-    """Apply the document cap once per language pair.
+def holdout_budget(config: Mapping[str, Any], corpus_rows: int | None) -> int | None:
+    """Rows this policy may spend on document holdout, or None for unbounded.
 
-    The cap bounds how many documents a benchmark may draw from. Applied across
-    pairs it becomes a race: whichever pair has more documents consumes the
-    allowance and the other is left with none. Each pair gets its own cap, taken
-    from that pair's merged policy.
+    Holding out a document removes *every* chunk of it from training, so the cost
+    of a benchmark is the size of the documents it touches, not the size of the
+    benchmark. A cap on document *count* cannot express that: thirty documents
+    cost 300 rows or 300,000 depending entirely on which thirty.
+    """
+    selection = config["selection"]
+    budgets: list[int] = []
+    absolute = selection.get("max_holdout_rows")
+    if absolute:
+        budgets.append(int(absolute))
+    share = selection.get("max_holdout_share")
+    if share and corpus_rows:
+        budgets.append(int(float(share) * int(corpus_rows)))
+    if not budgets:
+        # Deployment-owned policy files predate these keys, so this is a warning
+        # rather than a validation failure — but an unbounded holdout is how a
+        # 399-row benchmark cost 241,525 rows, and it should never be silent.
+        log.warning(
+            "Document holdout is unbounded: neither selection.max_holdout_rows nor "
+            "selection.max_holdout_share (with a known corpus size) is set. Holdout "
+            "cost is limited only by max_test_documents, which does not bound rows."
+        )
+        return None
+    return min(budgets)
+
+
+def _document_costs(
+    rows: list[_Row],
+    by_document: Mapping[str, list[int]],
+    document_sizes: Mapping[str, int] | None,
+) -> dict[str, int]:
+    """Rows each document would cost if held out.
+
+    ``document_sizes`` counts the document across the whole corpus the holdout
+    will be applied to. Without it the only available number is how often the
+    document appears in the candidate pool, which understates the cost by the
+    pool's sampling ratio — the failure that made a 10,000-row pool quarantine
+    241,525 rows. The caller is expected to supply real sizes; the fallback keeps
+    a partial ordering rather than pretending the cost is zero.
+    """
+    if document_sizes:
+        return {
+            document_id: int(document_sizes.get(document_id, len(indexes)))
+            for document_id, indexes in by_document.items()
+        }
+    return {document_id: len(indexes) for document_id, indexes in by_document.items()}
+
+
+def _candidate_documents(
+    rows: list[_Row],
+    indexes: list[int],
+    config: dict[str, Any],
+    rng: random.Random,
+    document_sizes: Mapping[str, int] | None = None,
+    corpus_rows: int | None = None,
+) -> tuple[list[int], dict[str, Any]]:
+    """Choose which documents a benchmark may draw from, within a row budget.
+
+    Two bounds apply. ``max_test_documents`` caps how many documents a benchmark
+    spans, which is about diversity. ``max_holdout_share`` / ``max_holdout_rows``
+    cap how many rows holding them out will cost, which is about not destroying
+    the training corpus. The row budget is the binding one in practice.
+
+    Applied across pairs the caps become a race: whichever pair has more
+    documents consumes the allowance and the other is left with none. Each pair
+    gets its own, taken from that pair's merged policy.
     """
     if not indexes:
-        return indexes
+        return indexes, {}
     keys = {rows[index].pair_key for index in indexes}
     if len(keys) > 1:
         by_pair: dict[str, list[int]] = defaultdict(list)
         for index in indexes:
             by_pair[rows[index].pair_key].append(index)
         kept: set[int] = set()
+        pair_reports: dict[str, Any] = {}
         for key, pair_indexes in by_pair.items():
-            kept.update(
-                _candidate_documents(rows, pair_indexes, resolve_pair_policy(config, key), rng)
+            pair_kept, pair_report = _candidate_documents(
+                rows,
+                pair_indexes,
+                resolve_pair_policy(config, key),
+                rng,
+                document_sizes,
+                corpus_rows,
             )
-        return [index for index in indexes if index in kept]
+            kept.update(pair_kept)
+            pair_reports[key] = pair_report
+        return [index for index in indexes if index in kept], {"by_pair": pair_reports}
 
     config = resolve_pair_policy(config, next(iter(keys)))
     maximum = config["selection"].get("max_test_documents")
-    if not maximum:
-        return indexes
-    log.info("Candidate documents: cap %s applied to %s indexes", maximum, len(indexes))
+    budget = holdout_budget(config, corpus_rows)
+    report: dict[str, Any] = {
+        "budget_rows": budget,
+        "corpus_rows": corpus_rows,
+        "document_sizes": "corpus" if document_sizes else "candidate_pool",
+    }
+    if not maximum and budget is None:
+        return indexes, {**report, "applied": False, "reason": "no document cap or budget"}
+
     # Missing document IDs are represented as one synthetic document per row.
     # A document cap must not turn a requested 1,000-row evaluation set into
     # only 30 rows when the import did not provide document metadata.
     if all(rows[index].document_id.startswith("sample:") for index in indexes):
-        return indexes
+        return indexes, {**report, "applied": False, "reason": "no document metadata"}
+
     by_document: dict[str, list[int]] = defaultdict(list)
     for index in indexes:
         by_document[rows[index].document_id].append(index)
-    if int(maximum) >= len(by_document):
-        return indexes
+    costs = _document_costs(rows, by_document, document_sizes)
+    report["documents_available"] = len(by_document)
 
+    total_cost = sum(costs.values())
+    if (not maximum or int(maximum) >= len(by_document)) and (
+        budget is None or total_cost <= budget
+    ):
+        return indexes, {
+            **report,
+            "applied": False,
+            "reason": "every candidate document fits",
+            "documents_held": len(by_document),
+            "estimated_rows": total_cost,
+        }
+
+    cap = int(maximum) if maximum else len(by_document)
     by_domain: dict[str, list[str]] = defaultdict(list)
     for document_id, document_indexes in by_document.items():
         by_domain[rows[document_indexes[0]].domain].append(document_id)
     domain_rows = Counter(rows[index].domain for index in indexes)
     slots = {
-        domain: max(1, round(count / len(indexes) * int(maximum)))
-        for domain, count in domain_rows.items()
+        domain: max(1, round(count / len(indexes) * cap)) for domain, count in domain_rows.items()
     }
-    while sum(slots.values()) > int(maximum):
+    while sum(slots.values()) > cap:
         slots[max(slots, key=slots.get)] -= 1
-    while sum(slots.values()) < int(maximum):
+    while sum(slots.values()) < cap:
         domain = max(by_domain, key=lambda item: len(by_domain[item]) - slots.get(item, 0))
         if len(by_domain[domain]) <= slots[domain]:
             break
         slots[domain] += 1
 
-    selected_documents: set[str] = set()
-    for domain, documents in by_domain.items():
-        def score(document_id: str) -> tuple[float, float]:
-            document_rows = [rows[index] for index in by_document[document_id]]
-            coverage = len({row.length_bucket for row in document_rows})
-            hard_density = (
-                sum(sum(row.flags.values()) for row in document_rows) / len(document_rows)
-            )
-            return coverage * 2 + hard_density, rng.random() * 1e-6
+    def value(document_id: str) -> float:
+        """How much benchmark signal this document offers."""
+        document_rows = [rows[index] for index in by_document[document_id]]
+        coverage = len({row.length_bucket for row in document_rows})
+        hard_density = sum(sum(row.flags.values()) for row in document_rows) / len(document_rows)
+        return coverage * 2 + hard_density
 
-        selected_documents.update(
-            sorted(documents, key=score, reverse=True)[: slots.get(domain, 0)]
-        )
-    return [index for index in indexes if rows[index].document_id in selected_documents]
+    def rank(document_id: str) -> tuple[float, float]:
+        # Value per row spent, so a document that offers the same coverage for a
+        # tenth of the corpus wins. Ties break deterministically on the seeded rng.
+        return value(document_id) / max(costs[document_id], 1), rng.random() * 1e-6
+
+    ranked = {
+        domain: sorted(documents, key=rank, reverse=True)
+        for domain, documents in by_domain.items()
+    }
+    # Round-robin so the budget is shared between domains instead of being
+    # consumed by whichever one happens to be iterated first.
+    positions = dict.fromkeys(ranked, 0)
+    selected_documents: set[str] = set()
+    spent = 0
+    exhausted: set[str] = set()
+    while len(selected_documents) < cap and len(exhausted) < len(ranked):
+        for domain in sorted(ranked):
+            if domain in exhausted or len(selected_documents) >= cap:
+                continue
+            position = positions[domain]
+            documents = ranked[domain]
+            if position >= len(documents) or len(
+                [d for d in selected_documents if d in by_domain[domain]]
+            ) >= slots.get(domain, 0):
+                exhausted.add(domain)
+                continue
+            document_id = documents[position]
+            positions[domain] = position + 1
+            if budget is not None and spent + costs[document_id] > budget:
+                # Skip this document but keep looking: a smaller one may still fit.
+                if all(costs[d] + spent > budget for d in documents[position + 1 :]):
+                    exhausted.add(domain)
+                continue
+            selected_documents.add(document_id)
+            spent += costs[document_id]
+
+    log.info(
+        "Candidate documents: held %s of %s documents, ~%s rows (budget %s)",
+        len(selected_documents),
+        len(by_document),
+        spent,
+        budget,
+    )
+    return [index for index in indexes if rows[index].document_id in selected_documents], {
+        **report,
+        "applied": True,
+        "documents_held": len(selected_documents),
+        "estimated_rows": spent,
+    }
 
 
 def _proportional_targets(counts: Counter[str], total: int) -> dict[str, int]:
@@ -1463,6 +1603,9 @@ def select(
     seed: int,
     config: dict[str, Any],
     progress: SelectionProgress | None = None,
+    *,
+    document_sizes: Mapping[str, int] | None = None,
+    corpus_rows: int | None = None,
 ) -> SelectionResult:
     """Run every source-pipeline stage and translate its outputs to registry state."""
     log.info("Starting Contamination Safe 'select' process...")
@@ -1550,7 +1693,9 @@ def select(
     rng = random.Random(seed)
     stage_started = time.perf_counter()
     _emit(progress, "candidate_documents", "Applying candidate-document limits")
-    candidates = _candidate_documents(annotated, active, config, rng)
+    candidates, holdout_report = _candidate_documents(
+        annotated, active, config, rng, document_sizes, corpus_rows
+    )
     _emit(
         progress,
         "candidate_documents",
@@ -1682,6 +1827,26 @@ def select(
         "quarantined": len(quarantined),
         "candidate_rows": len(candidates),
         "held_documents": len(held_documents),
+        # What holding those documents actually costs the training corpus. The
+        # count of held documents says nothing on its own: thirty documents cost
+        # 300 rows or 300,000 depending on which thirty.
+        "holdout": {
+            **holdout_report,
+            "actual_rows": (
+                sum(int(document_sizes.get(document, 0)) for document in held_documents)
+                if document_sizes
+                else None
+            ),
+            "rows_per_reserved_row": (
+                round(
+                    sum(int(document_sizes.get(document, 0)) for document in held_documents)
+                    / len(selected_set),
+                    1,
+                )
+                if document_sizes and selected_set
+                else None
+            ),
+        },
         "dedup_removed": dedup_report,
         "embedding_dedup_method": "random_hyperplane_lsh",
         "embeddings": {

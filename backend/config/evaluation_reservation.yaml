@@ -22,8 +22,24 @@ selection:
     has_mixed_script: 0.10
   rare_term_top_quantile: 0.90
   rare_term_min_share: 0.10
-  # Set to null to let selection use as many documents as necessary.
-  max_test_documents: 30
+  # Two different bounds, for two different concerns.
+  #
+  # max_test_documents is about diversity: how many documents a benchmark spans.
+  # It says nothing about cost, because document holdout removes every chunk of a
+  # held document from training and documents are not the same size. A registry
+  # of page-chunked books and standards averaged 8,051 rows per document, so a
+  # cap of 30 quarantined 241,525 rows to reserve 399 — 605 rows of training data
+  # per benchmark row. See docs/adr/005.
+  #
+  # max_holdout_share is about cost, and is the bound that matters: never spend
+  # more than this fraction of the corpus on holdout, whatever the documents
+  # weigh. Selection prefers documents that offer the most benchmark signal per
+  # row spent, so the budget buys diversity rather than truncating it.
+  # Set both to null to let selection use as many documents as necessary.
+  max_test_documents: 200
+  max_holdout_share: 0.01
+  # Absolute ceiling, applied alongside the share. null leaves only the share.
+  max_holdout_rows: null
 
 features:
   rare_token_max_count: 3
