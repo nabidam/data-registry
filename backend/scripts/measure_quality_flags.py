@@ -56,8 +56,9 @@ from rich.console import Console  # noqa: E402
 from rich.table import Table  # noqa: E402
 from sqlalchemy import select  # noqa: E402
 
+from core.config import settings  # noqa: E402
 from db.session import SessionLocal  # noqa: E402
-from models import Batch  # noqa: E402
+from models import Batch, Sample  # noqa: E402
 from services.evaluation.language_profiles import (  # noqa: E402
     PairProfile,
     pair_key,
@@ -101,6 +102,10 @@ LENGTH_RATIOS = (2.5, 3.0, 4.0)
 # script before we stop calling the row untranslated.
 UNTRANSLATED_SCRIPT_SHARE = 0.20
 
+# Recorded example texts. The first run truncated at 160 characters, which cut
+# off the repetition that `loop_target` is supposed to demonstrate.
+EXAMPLE_CHARS = 700
+
 LATIN_CHAR_RE = re.compile(r"[A-Za-z]")
 WORDLIKE_RE = re.compile(r"[^\W\d_]", re.UNICODE)
 
@@ -139,42 +144,8 @@ def _always(_: PairProfile) -> bool:
     return True
 
 
-def _target_lang_is(*codes: str) -> Callable[[PairProfile], bool]:
-    return lambda profile: profile.target.code in codes
-
-
 def _has_target_script(profile: PairProfile) -> bool:
     return profile.target.script is not None
-
-
-def _contains(needle: str, *, side: str) -> Callable[[PairProfile, str, str], bool]:
-    def match(_: PairProfile, source: str, target: str) -> bool:
-        text = source if side == "source" else target
-        return needle in text
-
-    return match
-
-
-def _boilerplate_anchored(
-    needle: str, window: int = 120
-) -> Callable[[PairProfile, str, str], bool]:
-    """Match only near the start or end of the target.
-
-    Translator boilerplate is appended or prepended; the same phrase in the middle
-    of a paragraph is far more likely to be genuine content.
-    """
-
-    def match(_: PairProfile, __: str, target: str) -> bool:
-        return needle in target[:window] or needle in target[-window:]
-
-    return match
-
-
-def _cooccurs(first: str, second: str) -> Callable[[PairProfile, str, str], bool]:
-    def match(_: PairProfile, __: str, target: str) -> bool:
-        return first in target and second in target
-
-    return match
 
 
 def _untranslated(profile: PairProfile, _: str, target: str) -> bool:
@@ -208,23 +179,6 @@ def _length_ratio_rule(limit: float) -> Callable[[PairProfile, str, str], bool]:
     return match
 
 
-def _persian(text: str) -> str:
-    """Normalize a Persian literal the same way profile-normalized rows are."""
-    from services.evaluation.language_profiles import get_language_profile
-
-    return get_language_profile("fa").normalize(text)
-
-
-# Confirmed reproduced verbatim by the trained model.
-BP_AI_TRANSLATED = _persian("ترجمه شده توسط هوش مصنوعی")
-BP_AI_NOTE = _persian(
-    "لطفاً توجه داشته باشید که این ترجمه ممکن است به طور کامل دقیق نباشد"
-)
-BP_AI_PHRASE = _persian("هوش مصنوعی")
-BP_TRANSLATION_WORD = _persian("ترجمه")
-BP_RIGHTS = _persian("کلیه حقوق محفوظ است")
-
-
 RULES: tuple[Rule, ...] = (
     Rule(
         "loop_target",
@@ -253,75 +207,11 @@ RULES: tuple[Rule, ...] = (
         )
         for limit in LENGTH_RATIOS
     ),
-    # Boilerplate, measured as competing variants so the false-positive cost of
-    # each is visible before one is chosen. See the handoff caveat: a bare search
-    # for "هوش مصنوعی" also matches legitimate science content.
-    Rule(
-        "bp_ai_naive",
-        "target contains 'هوش مصنوعی' anywhere (expected to over-match)",
-        _target_lang_is("fa"),
-        _contains(BP_AI_PHRASE, side="target"),
-    ),
-    Rule(
-        "bp_ai_cooccur",
-        "target contains both 'ترجمه' and 'هوش مصنوعی'",
-        _target_lang_is("fa"),
-        _cooccurs(BP_TRANSLATION_WORD, BP_AI_PHRASE),
-    ),
-    Rule(
-        "bp_ai_anchored",
-        "'هوش مصنوعی' within 120 chars of the target's start or end",
-        _target_lang_is("fa"),
-        _boilerplate_anchored(BP_AI_PHRASE),
-    ),
-    Rule(
-        "bp_ai_translated_exact",
-        "target contains 'ترجمه شده توسط هوش مصنوعی' (confirmed leak)",
-        _target_lang_is("fa"),
-        _contains(BP_AI_TRANSLATED, side="target"),
-    ),
-    Rule(
-        "bp_ai_note_exact",
-        "target contains the 'this translation may be inaccurate' notice (confirmed leak)",
-        _target_lang_is("fa"),
-        _contains(BP_AI_NOTE, side="target"),
-    ),
-    Rule(
-        "bp_rights_reserved",
-        "target contains 'کلیه حقوق محفوظ است'",
-        _target_lang_is("fa", "ar"),
-        _contains(BP_RIGHTS, side="target"),
-    ),
-    Rule(
-        "bp_rights_anchored",
-        "'کلیه حقوق محفوظ است' within 120 chars of the target's start or end",
-        _target_lang_is("fa", "ar"),
-        _boilerplate_anchored(BP_RIGHTS),
-    ),
-    Rule(
-        "bp_google_translate_target",
-        "target mentions 'Google Translate'",
-        _always,
-        _contains("Google Translate", side="target"),
-    ),
-    Rule(
-        "bp_google_translate_source",
-        "source mentions 'Google Translate'",
-        _always,
-        _contains("Google Translate", side="source"),
-    ),
-    Rule(
-        "bp_downloaded_from_target",
-        "target mentions 'Downloaded from'",
-        _always,
-        _contains("Downloaded from", side="target"),
-    ),
-    Rule(
-        "bp_downloaded_from_source",
-        "source mentions 'Downloaded from'",
-        _always,
-        _contains("Downloaded from", side="source"),
-    ),
+    # The boilerplate rules that used to live here were removed after the
+    # 2026-08-13 measurement; see docs/adr/004-corpus-quality-measurement.md.
+    # Every variant matched faithful translations of source-side boilerplate,
+    # and the two strings the model reproduced verbatim occur zero times in the
+    # corpus. Rebuilding them needs new evidence, not a new threshold.
 )
 
 RULE_NAMES = tuple(rule.name for rule in RULES)
@@ -330,13 +220,21 @@ RULE_NAMES = tuple(rule.name for rule in RULES)
 # --- loop detection --------------------------------------------------------
 
 
-def _repeats_ngram(tokens: list[str], n: int, times: int) -> bool:
+def _repeated_ngram(tokens: list[str], n: int, times: int) -> tuple[str, int] | None:
+    """The most repeated n-gram and its count, or None if none repeats enough.
+
+    Returning the offending phrase rather than a bare boolean is what makes a
+    hit reviewable: the first run of this script reported counts only, and the
+    counts alone could not distinguish a degenerate translation loop from
+    ordinary repetition in mathematical or tabular text.
+    """
     if len(tokens) < n + times - 1:
-        return False
+        return None
     counts: Counter[tuple[str, ...]] = Counter(
         tuple(tokens[i : i + n]) for i in range(len(tokens) - n + 1)
     )
-    return counts.most_common(1)[0][1] >= times
+    phrase, count = counts.most_common(1)[0]
+    return (" ".join(phrase), count) if count >= times else None
 
 
 def _loop_prefilter(frame: pl.DataFrame) -> pl.Series:
@@ -385,7 +283,9 @@ class Totals:
         return self.buckets.setdefault((batch_id, pair, allocation), Bucket())
 
 
-def _record_example(totals: Totals, rule: str, limit: int, row: dict) -> None:
+def _record_example(
+    totals: Totals, rule: str, limit: int, row: dict, evidence: str | None = None
+) -> None:
     bucket = totals.examples[rule]
     if len(bucket) >= limit:
         return
@@ -393,8 +293,10 @@ def _record_example(totals: Totals, rule: str, limit: int, row: dict) -> None:
         {
             "sample_id": int(row["sample_id"]),
             "batch_id": int(row["batch_id"]),
-            "source_text": row["source_text"][:160],
-            "target_text": row["target_text"][:160],
+            "allocation": row["allocation"],
+            "source_text": row["source_text"][:EXAMPLE_CHARS],
+            "target_text": row["target_text"][:EXAMPLE_CHARS],
+            **({"evidence": evidence} if evidence else {}),
         }
     )
 
@@ -432,21 +334,22 @@ def _measure_chunk(
             target = profile.normalize_target(row["target_text"])
 
             for rule in active:
+                evidence: str | None = None
                 if rule.name == "loop_target":
                     if not row["_loop_candidate"]:
                         continue
                     totals.loop_checked += 1
-                    hit = _repeats_ngram(
+                    repeat = _repeated_ngram(
                         profile.target_tokens(row["target_text"]), LOOP_NGRAM, LOOP_REPEATS
                     )
+                    if repeat is None:
+                        continue
+                    phrase, count = repeat
+                    evidence = f"{count}x {phrase!r}"
                 elif not rule.match(profile, source, target):
                     continue
-                else:
-                    hit = True
-                if not hit:
-                    continue
                 bucket.hits[rule.name] += 1
-                _record_example(totals, rule.name, examples, row)
+                _record_example(totals, rule.name, examples, row, evidence)
 
             source_key = profile.source_key(row["source_text"])
             key_rows.append(
@@ -480,24 +383,40 @@ def _measure_chunk(
 
 
 def _read_batch(
-    uri: str, *, chunk_rows: int, sample_rows: int, seed: int
+    uri: str,
+    allocations: pl.DataFrame,
+    *,
+    chunk_rows: int,
+    sample_rows: int,
+    seed: int,
 ) -> Iterator[pl.DataFrame]:
-    """Stream one batch's Parquet shards as bounded polars frames."""
+    """Stream one batch's Parquet shards as bounded polars frames.
+
+    Allocation is joined in from Postgres rather than read from the Parquet
+    column of the same name. That column is the value at ingest time and is
+    never updated, because batch Parquet is immutable; a dataset-level
+    reservation moves rows in Postgres only. Reading the Parquet copy silently
+    reports every later reservation as ``TRAINABLE``, which is exactly what the
+    first run of this script did.
+    """
     con = connect()
     try:
         source = parquet_source([uri])
-        available = set(con.sql(f"SELECT * FROM {source} LIMIT 0").columns)
-        # Older shards predate the allocation column; union_by_name cannot invent it.
-        allocation = "allocation" if "allocation" in available else "NULL AS allocation"
-        columns = ", ".join(READ_COLUMNS) + f", {allocation}"
+        columns = ", ".join(READ_COLUMNS)
         query = f"SELECT {columns} FROM {source}"
         if sample_rows:
             query += f" USING SAMPLE {int(sample_rows)} ROWS (reservoir, {int(seed)})"
         reader = con.sql(query).fetch_arrow_reader(chunk_rows)
         for record_batch in reader:
             frame = pl.from_arrow(record_batch)
-            yield frame.filter(
-                pl.col("source_text").is_not_null() & pl.col("target_text").is_not_null()
+            yield (
+                frame.filter(
+                    pl.col("source_text").is_not_null() & pl.col("target_text").is_not_null()
+                )
+                .join(allocations, on="sample_id", how="left")
+                # A Parquet row with no Postgres row is a real inconsistency, so
+                # it is labelled rather than dropped or silently defaulted.
+                .with_columns(pl.col("allocation").fill_null("MISSING_IN_POSTGRES"))
             )
     finally:
         con.close()
@@ -520,6 +439,21 @@ async def _ready_batches(batch_ids: list[int]) -> list[BatchRef]:
             stmt = stmt.where(Batch.id.in_(batch_ids))
         rows = await session.execute(stmt.order_by(Batch.id))
         return [BatchRef(r[0], r[1], r[2], int(r[3] or 0)) for r in rows]
+
+
+async def _batch_allocations(batch_id: int) -> pl.DataFrame:
+    """Current allocation of every sample in a batch, from the authority."""
+    async with SessionLocal() as session:
+        rows = await session.execute(
+            select(Sample.id, Sample.allocation).where(Sample.batch_id == batch_id)
+        )
+        pairs = rows.all()
+    return pl.DataFrame(
+        {
+            "sample_id": pl.Series([r[0] for r in pairs], dtype=pl.Int64),
+            "allocation": pl.Series([r[1] for r in pairs], dtype=pl.Utf8),
+        }
+    )
 
 
 # --- progress --------------------------------------------------------------
@@ -770,12 +704,19 @@ def _print_examples(totals: Totals) -> None:
         rows = totals.examples.get(name)
         if not rows:
             continue
-        table = Table(title=f"examples: {name}")
+        has_evidence = any(row.get("evidence") for row in rows)
+        table = Table(title=f"examples: {name}", show_lines=True)
         table.add_column("sample_id", justify="right")
-        table.add_column("source")
-        table.add_column("target")
+        table.add_column("alloc")
+        if has_evidence:
+            table.add_column("evidence")
+        table.add_column("source", overflow="fold")
+        table.add_column("target", overflow="fold")
         for row in rows:
-            table.add_row(str(row["sample_id"]), row["source_text"], row["target_text"])
+            cells = [str(row["sample_id"]), str(row.get("allocation", ""))]
+            if has_evidence:
+                cells.append(str(row.get("evidence", "")))
+            table.add_row(*cells, row["source_text"], row["target_text"])
         console.print(table)
 
 
@@ -841,6 +782,14 @@ async def main() -> int:
         f"sample_rows={args.sample_rows or 'all'} scratch={args.scratch}"
     )
 
+    # A one-off `docker compose run` container has no /tmp/mtreg: the work
+    # directory is a volume mounted only on the worker service. Neither DuckDB
+    # nor Path.write_text creates missing parents, so make them here.
+    for target in (args.scratch, args.json):
+        if target:
+            target.parent.mkdir(parents=True, exist_ok=True)
+    Path(settings.work_dir, "duckdb").mkdir(parents=True, exist_ok=True)
+
     args.scratch.unlink(missing_ok=True)
     scratch = duckdb.connect(str(args.scratch))
     totals = Totals()
@@ -853,8 +802,13 @@ async def main() -> int:
         )
         for batch in batches:
             progress.start_batch(batch, expected_rows(batch))
+            allocations = await _batch_allocations(batch.id)
+            progress.event(
+                f"batch {batch.id}: {allocations.height:,} allocation rows from Postgres"
+            )
             for frame in _read_batch(
                 batch.parquet_uri,
+                allocations,
                 chunk_rows=args.chunk_rows,
                 sample_rows=args.sample_rows,
                 seed=args.seed,
