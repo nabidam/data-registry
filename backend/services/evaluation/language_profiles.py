@@ -36,6 +36,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
 
+import polars as pl
+
 # Feature identifiers shared with contamination_safe. They are the keys of
 # ``_Row.flags``, of ``selection.hard_phenomena_min_share``, and of the report.
 FEATURE_MATH = "has_math"
@@ -122,12 +124,43 @@ def _normalize_russian(text: str) -> str:
     return unicodedata.normalize("NFKC", text).replace("ё", "е").replace("Ё", "Е")
 
 
+# --- vectorized twins ------------------------------------------------------
+# Ingestion de-duplicates every row of every import, which is the one hot path
+# in this system, so it needs these normalizers as polars expressions rather
+# than per-row Python calls. Each expression sits directly beside the scalar
+# function it mirrors, and ``tests/test_language_profiles.py`` asserts the two
+# agree: they are one rule with two evaluation strategies, not two rules.
+
+_DIGIT_MAP = dict(zip("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "01234567890123456789", strict=True))
+_LETTER_MAP = {
+    "ي": "ی", "ﻱ": "ی", "ﻲ": "ی", "ك": "ک", "ﻙ": "ک",
+    "ة": "ه", "ۀ": "ه", "أ": "ا", "إ": "ا",
+}
+
+
+def _normalize_default_expr(expr: pl.Expr) -> pl.Expr:
+    return expr.str.normalize("NFKC")
+
+
+def _normalize_persian_expr(expr: pl.Expr) -> pl.Expr:
+    return (
+        expr.str.normalize("NFKC")
+        .str.replace_many(_DIGIT_MAP | _LETTER_MAP)
+        .str.replace_all(_ARABIC_MARKS_RE.pattern, "")
+    )
+
+
+def _normalize_russian_expr(expr: pl.Expr) -> pl.Expr:
+    return expr.str.normalize("NFKC").str.replace_many({"ё": "е", "Ё": "Е"})
+
+
 @dataclass(frozen=True)
 class LanguageProfile:
     """Everything the selector needs to know about one language."""
 
     code: str
     normalize: Callable[[str], str]
+    normalize_expr: Callable[[pl.Expr], pl.Expr]
     script: re.Pattern[str] | None = None
     acronym: re.Pattern[str] | None = None
     units: re.Pattern[str] | None = None
@@ -139,13 +172,33 @@ class LanguageProfile:
         """Canonical whitespace-joined form used for exact duplicate detection."""
         return " ".join(self.tokens(text))
 
+    def key_expr(self, expr: pl.Expr) -> pl.Expr:
+        """Vectorized :meth:`key`, for de-duplicating a whole frame at once."""
+        return (
+            self.normalize_expr(expr)
+            .str.to_lowercase()
+            # TOKEN_RE splits on runs of non-word characters; collapsing those
+            # runs to one space and trimming produces the same joined tokens.
+            # Spelled out as "not a letter, number, or underscore" rather than
+            # as `[^\w]`, because Rust's `\w` also matches combining marks and
+            # join controls while Python's does not, and a stray Persian hamza
+            # would then survive here but not in `key`.
+            .str.replace_all(r"[^\p{L}\p{N}_]+", " ")
+            .str.strip_chars()
+        )
 
-_FALLBACK_PROFILE = LanguageProfile(code=UNKNOWN_LANGUAGE, normalize=_normalize_default)
+
+_FALLBACK_PROFILE = LanguageProfile(
+    code=UNKNOWN_LANGUAGE,
+    normalize=_normalize_default,
+    normalize_expr=_normalize_default_expr,
+)
 
 _PROFILES: dict[str, LanguageProfile] = {
     "en": LanguageProfile(
         code="en",
         normalize=_normalize_default,
+        normalize_expr=_normalize_default_expr,
         script=LATIN_SCRIPT_RE,
         acronym=LATIN_ACRONYM_RE,
         units=_units_pattern(_LATIN_UNITS),
@@ -153,6 +206,7 @@ _PROFILES: dict[str, LanguageProfile] = {
     "ru": LanguageProfile(
         code="ru",
         normalize=_normalize_russian,
+        normalize_expr=_normalize_russian_expr,
         script=CYRILLIC_SCRIPT_RE,
         acronym=CYRILLIC_ACRONYM_RE,
         units=_units_pattern(_CYRILLIC_UNITS),
@@ -160,6 +214,7 @@ _PROFILES: dict[str, LanguageProfile] = {
     "fa": LanguageProfile(
         code="fa",
         normalize=_normalize_persian,
+        normalize_expr=_normalize_persian_expr,
         script=ARABIC_SCRIPT_RE,
         # Persian is caseless: an acronym detector would be a fabrication.
         acronym=None,
@@ -168,6 +223,7 @@ _PROFILES: dict[str, LanguageProfile] = {
     "ar": LanguageProfile(
         code="ar",
         normalize=_normalize_persian,
+        normalize_expr=_normalize_persian_expr,
         script=ARABIC_SCRIPT_RE,
         acronym=None,
         units=_units_pattern(_PERSIAN_UNITS),

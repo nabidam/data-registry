@@ -9,6 +9,8 @@ import json
 import polars as pl
 from pydantic import BaseModel, Field
 
+from services.evaluation.language_profiles import resolve_pair
+
 CANONICAL_COLUMNS = [
     "sample_id",
     "batch_id",
@@ -41,6 +43,47 @@ def _column(df: pl.DataFrame, name: str | None, default, dtype: pl.DataType) -> 
     if name and name in df.columns:
         return pl.col(name).cast(dtype, strict=False)
     return pl.lit(default, dtype=dtype)
+
+
+_ORDER = "_normalize_order"
+_SRC_KEY = "_normalize_src_key"
+_TGT_KEY = "_normalize_tgt_key"
+
+
+def _deduplicate(df: pl.DataFrame) -> pl.DataFrame:
+    """Drop rows whose pair repeats after language-aware normalization.
+
+    Comparing raw text misses pairs that are the same text typed differently:
+    Persian ``ي``/``ی`` and ``ك``/``ک`` are one letter from two keyboards,
+    Arabic-Indic digits and Western digits are one number, and diacritics and
+    ZWNJ are invisible. A corpus measurement over five batches found ~105,000
+    such pairs surviving raw de-duplication *inside a single import*, which is
+    memorization pressure the registry was supposed to have removed.
+
+    Keys are built per language pair, since which variants are equivalent is a
+    property of the language, not of the corpus. Row order is preserved so the
+    surviving row of a duplicate group is the first one in the input, exactly as
+    before, and so sample ids stay deterministic.
+    """
+    keyed = [
+        group.with_columns(
+            profile.source.key_expr(pl.col("source_text")).alias(_SRC_KEY),
+            profile.target.key_expr(pl.col("target_text")).alias(_TGT_KEY),
+        )
+        for (src_lang, tgt_lang), group in df.with_row_index(_ORDER).group_by(
+            ["src_lang", "tgt_lang"]
+        )
+        for profile in [resolve_pair(src_lang, tgt_lang)]
+    ]
+    if not keyed:
+        return df
+
+    return (
+        pl.concat(keyed, how="vertical")
+        .sort(_ORDER)
+        .unique(subset=[_SRC_KEY, _TGT_KEY], keep="first", maintain_order=True)
+        .drop(_ORDER, _SRC_KEY, _TGT_KEY)
+    )
 
 
 def normalize(
@@ -84,12 +127,14 @@ def normalize(
         meta_expr.alias("meta"),
     )
 
-    out = out.filter(
-        pl.col("source_text").is_not_null()
-        & pl.col("target_text").is_not_null()
-        & (pl.col("source_text").str.len_chars() > 0)
-        & (pl.col("target_text").str.len_chars() > 0)
-    ).unique(subset=["source_text", "target_text"], keep="first")
+    out = _deduplicate(
+        out.filter(
+            pl.col("source_text").is_not_null()
+            & pl.col("target_text").is_not_null()
+            & (pl.col("source_text").str.len_chars() > 0)
+            & (pl.col("target_text").str.len_chars() > 0)
+        )
+    )
 
     return out.with_columns(
         pl.lit(batch_id, dtype=pl.Int32).alias("batch_id"),
