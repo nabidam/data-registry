@@ -8,6 +8,7 @@ the dataset builder, so evaluation data can never leak into a snapshot.
 import asyncio
 import hashlib
 import logging
+from collections import Counter
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -25,6 +26,7 @@ from core.config import settings
 from db.session import raw_psycopg_connection
 from models import Batch
 from services.evaluation.contamination_safe import (
+    document_sizes_from_frame,
     prepare_contamination_reference,
     scan_full_corpus_contamination,
 )
@@ -327,6 +329,11 @@ async def _ingest_large_delimited(
 
     candidate_limit = max(1, settings.evaluation_candidate_limit)
     candidate_pool: pl.DataFrame | None = None
+    # Accumulated across shards rather than from the candidate pool: holdout
+    # quarantines every chunk of a held document in the whole batch, and a
+    # bounded pool shows only a sample of each document's true size.
+    selection_config = load_contamination_safe_config()
+    document_sizes: Counter[str] = Counter()
     imported = 0
     shard_count = 0
     for raw in iter_any(local_file, fmt, batch_size=settings.import_batch_rows):
@@ -356,6 +363,7 @@ async def _ingest_large_delimited(
             "target_text",
             "meta",
         )
+        document_sizes_from_frame(normalized, selection_config, document_sizes)
         normalized.write_parquet(temp / f"normalized-{shard_count:06d}.parquet", compression="zstd")
         shard_count += 1
         imported += normalized.height
@@ -409,11 +417,15 @@ async def _ingest_large_delimited(
         shards_total=shard_count,
     )
     selection = await asyncio.to_thread(
-        get_selector(policy.selector),
-        candidates,
-        target,
-        policy.seed,
-        selection_progress,
+        partial(
+            get_selector(policy.selector),
+            candidates,
+            target,
+            policy.seed,
+            selection_progress,
+            document_sizes=document_sizes,
+            corpus_rows=imported,
+        )
     )
     _, reservation = apply_selection(
         candidates,

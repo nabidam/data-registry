@@ -273,6 +273,29 @@ def document_key(record: Mapping[str, Any], config: Mapping[str, Any]) -> str:
     return _document_id(dict(record), separator, _document_namespace(dict(config)))
 
 
+def document_sizes_from_frame(
+    frame: pl.DataFrame, config: Mapping[str, Any], into: Counter[str] | None = None
+) -> Counter[str]:
+    """Chunk count per document for rows already in memory.
+
+    Used by ingestion, where the corpus holdout applies to is the batch itself.
+    ``into`` lets a streaming import accumulate across shards without holding the
+    whole batch. Rows without a document id are skipped: they are one synthetic
+    document each, cost one row, and would swamp the map.
+    """
+    counted = into if into is not None else Counter()
+    if "document_id" not in frame.columns:
+        return counted
+    grouped = (
+        frame.filter(pl.col("document_id").is_not_null() & (pl.col("document_id") != ""))
+        .group_by(["source_id", "batch_id", "document_id"])
+        .len()
+    )
+    for record in grouped.iter_rows(named=True):
+        counted[document_key(record, config)] += int(record["len"])
+    return counted
+
+
 def _document_namespace(config: dict[str, Any]) -> str:
     namespace = str(config.get("contamination", {}).get("document_namespace", "source"))
     if namespace not in DOCUMENT_NAMESPACES:
@@ -1705,6 +1728,20 @@ def select(
         time.perf_counter() - stage_started,
     )
     selection_target = min(target, len(candidates))
+    if selection_target < target:
+        # Reservation #1 asked for 1,000 rows and got 399, and nothing said why.
+        # The candidate pool is bounded by EVALUATION_CANDIDATE_LIMIT and by
+        # target x EVALUATION_CANDIDATE_MULTIPLIER, and the document cap then
+        # keeps only rows from the documents it holds; either can leave fewer
+        # rows than the target before selection has made a single choice.
+        log.warning(
+            "Only %s of the requested %s rows can be selected: %s candidates remain after "
+            "de-duplication and document limits. Raise EVALUATION_CANDIDATE_MULTIPLIER or "
+            "EVALUATION_CANDIDATE_LIMIT, or relax selection.max_test_documents.",
+            selection_target,
+            target,
+            len(candidates),
+        )
     stage_started = time.perf_counter()
     _emit(
         progress,
@@ -1826,6 +1863,9 @@ def select(
         "selected": len(selected_set),
         "quarantined": len(quarantined),
         "candidate_rows": len(candidates),
+        # Why a run delivered fewer rows than asked for, without needing the logs.
+        "target_requested": target,
+        "target_achievable": selection_target,
         "held_documents": len(held_documents),
         # What holding those documents actually costs the training corpus. The
         # count of held documents says nothing on its own: thirty documents cost

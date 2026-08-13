@@ -99,22 +99,39 @@ async def by_source(session: AsyncSession = Depends(get_session)):
 @router.get("/datasets")
 async def by_dataset(session: AsyncSession = Depends(get_session)):
     rows = await session.execute(
-        select(DatasetDefinition.id, DatasetDefinition.name).order_by(DatasetDefinition.id.desc()).limit(50)
+        select(DatasetDefinition.id, DatasetDefinition.name)
+        .order_by(DatasetDefinition.id.desc())
+        .limit(50)
     )
     return [dict(r) for r in rows.mappings()]
 
 
 @router.get("/snapshots")
 async def by_snapshot(session: AsyncSession = Depends(get_session)):
+    """Row counts per snapshot.
+
+    A snapshot's total lives in its ``stats`` JSONB, written by the builder from
+    the split counts it actually exported. There is no ``total_samples`` column,
+    and selecting one made this endpoint fail with a 500 on every call.
+    """
     rows = await session.execute(
-        select(Snapshot.id, Snapshot.name, Snapshot.total_samples).order_by(Snapshot.id.desc()).limit(50)
+        select(Snapshot.id, Snapshot.name, Snapshot.stats).order_by(Snapshot.id.desc()).limit(50)
     )
-    return [dict(r) for r in rows.mappings()]
+    return [
+        {
+            "id": row.id,
+            "name": row.name,
+            "total_samples": (row.stats or {}).get("total", 0),
+        }
+        for row in rows
+    ]
 
 
 @router.get("/evaluation-sets")
 async def by_eval_set(session: AsyncSession = Depends(get_session)):
     rows = await session.execute(
-        select(EvaluationSet.id, EvaluationSet.name, EvaluationSet.sample_count).order_by(EvaluationSet.id.desc()).limit(50)
+        select(EvaluationSet.id, EvaluationSet.name, EvaluationSet.sample_count)
+        .order_by(EvaluationSet.id.desc())
+        .limit(50)
     )
     return [dict(r) for r in rows.mappings()]

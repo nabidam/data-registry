@@ -17,7 +17,11 @@ from core.allocation import Allocation
 from core.config import settings
 from models import Sample
 from services.evaluation.contamination import scan_snapshots
-from services.evaluation.contamination_safe import SelectionResult
+from services.evaluation.contamination_safe import (
+    SelectionResult,
+    document_sizes_from_frame,
+)
+from services.evaluation.reservation_config import load_contamination_safe_config
 from services.evaluation.selectors import get_selector, reservation_size
 
 log = logging.getLogger(__name__)
@@ -67,7 +71,17 @@ def allocate(df: pl.DataFrame, policy: ReservationPolicy) -> tuple[pl.DataFrame,
     on the batch so a reservation is auditable after the fact.
     """
     target = reservation_size(df.height, policy.percent, policy.max_samples)
-    selection = get_selector(policy.selector)(df, target, policy.seed)
+    # Document holdout removes every chunk of a held document, so selection needs
+    # to know what those documents weigh. Here the corpus is the import itself.
+    sizes = document_sizes_from_frame(df, load_contamination_safe_config())
+    selection = get_selector(policy.selector)(
+        df,
+        target,
+        policy.seed,
+        None,
+        document_sizes=sizes,
+        corpus_rows=df.height,
+    )
     return apply_selection(df, policy, selection, imported_count=df.height)
 
 
