@@ -12,3 +12,6 @@ dist/
 .impeccable
 mtdataregistry_*.tar.gz
 docs/adr
+# Corpus measurement outputs: contain corpus text, regenerate with
+# backend/scripts/measure_quality_flags.py
+*_report.json
