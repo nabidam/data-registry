@@ -275,9 +275,10 @@ async def run_dataset_reservation(
             "comparison_scope": reservation.comparison_scope,
             "contamination_rows_scanned": scanned_rows,
             "semantic_rows_checked": semantic_checked,
-            # Rows the cheap shingle gate admitted, before the per-reference-row
-            # check. The gap between the two is what that check saves in LaBSE.
+            # Rows that survived both gates and were embedded: the LaBSE bill.
             "semantic_rows_prefiltered": semantic_prefiltered,
+            # Rows the cheap union gate admitted, before the per-reference-row
+            # check. Subtract prefiltered from this to get what that check saved.
             "semantic_rows_shingle_gated": semantic_gated,
             "selection": selector_report,
         }

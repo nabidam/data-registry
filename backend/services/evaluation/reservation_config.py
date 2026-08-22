@@ -183,6 +183,22 @@ def validate_policy(config: Mapping[str, Any]) -> None:
         if value is not None and not (isinstance(value, int | float) and 0.0 <= value <= 1.0):
             problems.append(f"contamination.{key} must be a cosine value in [0, 1]; got {value!r}")
 
+    for key in ("semantic_prefilter_shingle_size", "semantic_prefilter_min_shared_shingles"):
+        value = contamination.get(key)
+        valid = isinstance(value, int) and not isinstance(value, bool) and value > 0
+        if value is not None and not valid:
+            problems.append(f"contamination.{key} must be a positive integer; got {value!r}")
+
+    same_row = contamination.get("semantic_prefilter_require_same_reference_row")
+    if same_row is not None and not isinstance(same_row, bool):
+        # The reader coerces with bool(), where the string "false" is true. A
+        # deployment meaning to restore the union gate would silently keep the
+        # per-reference-row one, which is a recall change made by a typo.
+        problems.append(
+            "contamination.semantic_prefilter_require_same_reference_row must be a boolean; "
+            f"got {same_row!r}"
+        )
+
     _check_selection(config.get("selection"), "policy", problems)
 
     overrides = config.get("pairs") or {}

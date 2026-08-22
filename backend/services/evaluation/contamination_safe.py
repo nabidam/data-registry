@@ -24,7 +24,7 @@ import math
 import random
 import time
 from collections import Counter, defaultdict
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -1159,11 +1159,64 @@ def _document_costs(
     a partial ordering rather than pretending the cost is zero.
     """
     if document_sizes:
+        # A document missing from corpus-wide sizes is single-chunk (sizing omits
+        # those), so its pool count is 1 and the fallback agrees with
+        # ``holdout_rows``. ``max`` keeps that true if a caller ever supplies a
+        # sizes map built some other way.
         return {
-            document_id: int(document_sizes.get(document_id, len(indexes)))
+            document_id: max(int(document_sizes.get(document_id, len(indexes))), 1)
             for document_id, indexes in by_document.items()
         }
     return {document_id: len(indexes) for document_id, indexes in by_document.items()}
+
+
+def _merge_pair_reports(pair_reports: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
+    """Roll per-pair holdout reports up into the shape the report documents.
+
+    README and ADR 005 name ``budget_rows``, ``estimated_rows``,
+    ``documents_held`` and ``documents_available`` at the top level of the
+    ``holdout`` block. Splitting the work per language pair must not move them
+    one level deeper, or the documented report exists only for single-pair
+    reservations. A total is ``None`` when any pair's contribution is unknown:
+    one unbounded pair makes the whole holdout unbounded, and pretending
+    otherwise is exactly the silence this block was added to break.
+    """
+    merged: dict[str, Any] = {"by_pair": dict(pair_reports)}
+    for name in (
+        "budget_rows",
+        "corpus_rows",
+        "estimated_rows",
+        "documents_held",
+        "documents_available",
+    ):
+        values = [report.get(name) for report in pair_reports.values()]
+        merged[name] = (
+            None if any(value is None for value in values) else sum(int(value) for value in values)
+        )
+    merged["applied"] = any(bool(report.get("applied")) for report in pair_reports.values())
+    merged["document_sizes"] = (
+        "corpus"
+        if all(report.get("document_sizes") == "corpus" for report in pair_reports.values())
+        else "candidate_pool"
+    )
+    return merged
+
+
+def holdout_rows(
+    document_ids: Iterable[str], document_sizes: Mapping[str, int] | None
+) -> int | None:
+    """Rows holding these documents costs, or None when sizes are unknown.
+
+    A document absent from ``document_sizes`` costs one row, not zero: sizing
+    omits single-chunk documents on purpose, since keeping millions of entries
+    to record a cost of one would be the expensive part of a cheap measurement.
+    Reading the absence as zero made the reported cost disagree with the cost
+    the budget was spent against — the same document priced at one by
+    ``_document_costs`` and at nothing by the report.
+    """
+    if not document_sizes:
+        return None
+    return sum(int(document_sizes.get(document_id, 1)) for document_id in document_ids)
 
 
 def _candidate_documents(
@@ -1195,17 +1248,30 @@ def _candidate_documents(
         kept: set[int] = set()
         pair_reports: dict[str, Any] = {}
         for key, pair_indexes in by_pair.items():
+            # Each pair is budgeted against its own slice of the corpus rather
+            # than the whole of it. Handing every pair the full corpus size lets
+            # N pairs spend N x max_holdout_share between them, which is not the
+            # guarantee the policy states. The pool's pair proportions stand in
+            # for the corpus's, the pool being a uniform sample of it.
+            pair_corpus_rows = (
+                max(1, round(corpus_rows * len(pair_indexes) / len(indexes)))
+                if corpus_rows
+                else corpus_rows
+            )
             pair_kept, pair_report = _candidate_documents(
                 rows,
                 pair_indexes,
                 resolve_pair_policy(config, key),
                 rng,
                 document_sizes,
-                corpus_rows,
+                pair_corpus_rows,
             )
             kept.update(pair_kept)
             pair_reports[key] = pair_report
-        return [index for index in indexes if index in kept], {"by_pair": pair_reports}
+        return (
+            [index for index in indexes if index in kept],
+            _merge_pair_reports(pair_reports),
+        )
 
     config = resolve_pair_policy(config, next(iter(keys)))
     maximum = config["selection"].get("max_test_documents")
@@ -1811,11 +1877,16 @@ def select(
         # rows than the target before selection has made a single choice.
         log.warning(
             "Only %s of the requested %s rows can be selected: %s candidates remain after "
-            "de-duplication and document limits. Raise EVALUATION_CANDIDATE_MULTIPLIER or "
-            "EVALUATION_CANDIDATE_LIMIT, or relax selection.max_test_documents.",
+            "de-duplication and document limits (holdout budget %s rows over a corpus of %s). "
+            "Raise EVALUATION_CANDIDATE_MULTIPLIER or EVALUATION_CANDIDATE_LIMIT to widen the "
+            "pool, or selection.max_holdout_share / max_holdout_rows to let the benchmark span "
+            "more documents; selection.max_test_documents is a diversity bound and is rarely "
+            "the binding one.",
             selection_target,
             target,
             len(candidates),
+            holdout_report.get("budget_rows"),
+            holdout_report.get("corpus_rows"),
         )
     stage_started = time.perf_counter()
     _emit(
@@ -1929,6 +2000,7 @@ def select(
     selected_rows = [annotated[index] for index in selected_set]
     candidate_rows = [annotated[index] for index in candidates]
     unsupported = unsupported_features(selected_rows, config)
+    actual_holdout_rows = holdout_rows(held_documents, document_sizes)
     report = {
         "strategy": "contamination_safe",
         "config": config,
@@ -1939,26 +2011,26 @@ def select(
         "quarantined": len(quarantined),
         "candidate_rows": len(candidates),
         # Why a run delivered fewer rows than asked for, without needing the logs.
+        # The document stage is named separately from the pool, because after
+        # ADR 005 the row budget is usually what bounds it and the two are fixed
+        # with different knobs.
         "target_requested": target,
         "target_achievable": selection_target,
+        "target_limited_by": (
+            None
+            if selection_target >= target
+            else ("holdout_budget" if holdout_report.get("applied") else "candidate_pool")
+        ),
         "held_documents": len(held_documents),
         # What holding those documents actually costs the training corpus. The
         # count of held documents says nothing on its own: thirty documents cost
         # 300 rows or 300,000 depending on which thirty.
         "holdout": {
             **holdout_report,
-            "actual_rows": (
-                sum(int(document_sizes.get(document, 0)) for document in held_documents)
-                if document_sizes
-                else None
-            ),
+            "actual_rows": actual_holdout_rows,
             "rows_per_reserved_row": (
-                round(
-                    sum(int(document_sizes.get(document, 0)) for document in held_documents)
-                    / len(selected_set),
-                    1,
-                )
-                if document_sizes and selected_set
+                round(actual_holdout_rows / len(selected_set), 1)
+                if actual_holdout_rows is not None and selected_set
                 else None
             ),
         },

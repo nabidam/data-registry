@@ -15,3 +15,6 @@ docs/adr
 # Corpus measurement outputs: contain corpus text, regenerate with
 # backend/scripts/measure_quality_flags.py
 *_report.json
+
+# Local review notes, not a merged artefact
+docs/reviews/2026-08-16-holdout-and-shingle-gate-claims-audit.md

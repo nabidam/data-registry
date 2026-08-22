@@ -160,7 +160,9 @@ of the documents a benchmark touches rather than the size of the benchmark.
 `selection.max_test_documents` bounds how many documents a benchmark spans and says nothing about
 that cost; `selection.max_holdout_share` (default `0.01`) and `selection.max_holdout_rows` bound it
 directly, and documents are chosen by benchmark value per row spent so the budget buys diversity
-instead of truncating it. Without a budget, 30 documents averaging 8,051 chunks quarantined 241,525
+instead of truncating it. The budget is a fraction of the whole corpus: with several language pairs
+each pair is budgeted against its own slice of it, so the pairs share one allowance rather than
+taking one each. Without a budget, 30 documents averaging 8,051 chunks quarantined 241,525
 rows to reserve 399. The reservation report records `holdout.budget_rows`, `holdout.actual_rows`,
 and `holdout.rows_per_reserved_row`.
 

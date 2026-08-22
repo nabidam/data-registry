@@ -5,6 +5,7 @@ from services.evaluation.contamination_safe import (
     _candidate_documents,
     document_key,
     holdout_budget,
+    holdout_rows,
 )
 from services.evaluation.reservation_config import load_contamination_safe_config
 
@@ -12,10 +13,12 @@ from services.evaluation.reservation_config import load_contamination_safe_confi
 class _Row:
     """The attributes `_candidate_documents` reads, and nothing else."""
 
-    def __init__(self, document_id: str, domain: str = "general") -> None:
+    def __init__(
+        self, document_id: str, domain: str = "general", pair_key: str = "en-fa"
+    ) -> None:
         self.document_id = document_id
         self.domain = domain
-        self.pair_key = "en-fa"
+        self.pair_key = pair_key
         self.length_bucket = "medium"
         self.flags = {"has_math": False, "has_numbers_units": True}
 
@@ -134,3 +137,72 @@ class DocumentKeyTests(TestCase):
     def test_shipped_policy_is_loadable_and_bounded(self):
         config = load_contamination_safe_config()
         self.assertIsNotNone(holdout_budget(config, 1_000_000))
+
+
+class MultiPairBudgetTests(TestCase):
+    """The budget is a fraction of the corpus, not a fraction per pair."""
+
+    def _rows(self, sizes: dict[str, tuple[str, int]], per_document: int = 5):
+        rows, indexes = [], []
+        for document_id, (pair_key, _) in sizes.items():
+            for _ in range(per_document):
+                indexes.append(len(rows))
+                rows.append(_Row(document_id, pair_key=pair_key))
+        return rows, indexes
+
+    def _split(self):
+        sizes = {
+            "src1:en_a": ("en-fa", 400),
+            "src1:en_b": ("en-fa", 400),
+            "src1:ru_a": ("ru-fa", 400),
+            "src1:ru_b": ("ru-fa", 400),
+        }
+        rows, indexes = self._rows(sizes)
+        document_sizes = {key: size for key, (_, size) in sizes.items()}
+        return rows, indexes, document_sizes
+
+    def test_pairs_share_one_corpus_budget(self):
+        rows, indexes, document_sizes = self._split()
+        _, report = _candidate_documents(
+            rows,
+            indexes,
+            _config(max_holdout_share=0.01),
+            random.Random(42),
+            document_sizes,
+            100_000,  # 1,000 rows for the whole corpus, not 1,000 per pair
+        )
+        self.assertEqual(report["budget_rows"], 1_000)
+        self.assertLessEqual(report["estimated_rows"], 1_000)
+        self.assertEqual(set(report["by_pair"]), {"en-fa", "ru-fa"})
+        for pair_report in report["by_pair"].values():
+            self.assertEqual(pair_report["budget_rows"], 500)
+
+    def test_documented_keys_stay_at_the_top_level(self):
+        rows, indexes, document_sizes = self._split()
+        _, report = _candidate_documents(
+            rows, indexes, _config(max_holdout_rows=600), random.Random(42), document_sizes, 100_000
+        )
+        for key in ("budget_rows", "estimated_rows", "documents_held", "documents_available"):
+            self.assertIn(key, report, f"README and ADR 005 name holdout.{key}")
+        self.assertEqual(report["document_sizes"], "corpus")
+
+    def test_one_unbounded_pair_makes_the_total_unbounded(self):
+        rows, indexes, document_sizes = self._split()
+        config = _config(max_holdout_share=0.01)
+        # ru-fa opts out of the budget; the roll-up must not report a number that
+        # looks like a bound.
+        config["pairs"] = {"ru-fa": {"selection": {"max_holdout_share": None}}}
+        _, report = _candidate_documents(
+            rows, indexes, config, random.Random(42), document_sizes, 100_000
+        )
+        self.assertIsNone(report["budget_rows"])
+
+
+class HoldoutRowsTests(TestCase):
+    def test_missing_document_costs_one_row_not_zero(self):
+        # Sizing omits single-chunk documents, and _document_costs prices them at
+        # one. The report has to agree, or rows_per_reserved_row reads low.
+        self.assertEqual(holdout_rows(["src1:a", "src1:single"], {"src1:a": 40}), 41)
+
+    def test_no_sizes_means_unknown_rather_than_zero(self):
+        self.assertIsNone(holdout_rows(["src1:a"], None))

@@ -33,7 +33,9 @@ selection:
   #
   # max_holdout_share is about cost, and is the bound that matters: never spend
   # more than this fraction of the corpus on holdout, whatever the documents
-  # weigh. Selection prefers documents that offer the most benchmark signal per
+  # weigh. With several language pairs the allowance is split between them in
+  # proportion to their rows, so the guarantee stays a fraction of the corpus
+  # rather than becoming that fraction per pair. Selection prefers documents that offer the most benchmark signal per
   # row spent, so the budget buys diversity rather than truncating it.
   # Set both to null to let selection use as many documents as necessary.
   max_test_documents: 200
